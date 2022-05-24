@@ -1,0 +1,13 @@
+{
+    "compilerOptions": {
+        "module": "amd",
+        "target": "es6",
+        "lib": ["ES2015", "ES2015.Core", "DOM"],
+        "strict": true,
+        "noImplicitReturns": true,
+        "forceConsistentCasingInFileNames": true,
+        "noUncheckedIndexedAccess": true,
+        "sourceMap": true,
+        "outFile": "bundle.js"
+    }
+}
