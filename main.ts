@@ -4,7 +4,7 @@ type Scalar = null | undefined | string | number | boolean;
 
 type Value<T> = T | (() => T);
 
-type TemplateItem = Value<Scalar> | Component | TemplateItem[];
+type FragmentItem = Value<Scalar> | Component | FragmentItem[];
 
 type Styles = {
     [K in keyof CSSStyleDeclaration as CSSStyleDeclaration[K] extends Function ? never : K]?: Value<CSSStyleDeclaration[K]>;
@@ -27,7 +27,7 @@ const NULL = { _tag: 'NULL' } as const;
 
 interface MountRoot {
     component: Component;
-    mountPoint: NodeComponent;
+    mountPoint: Component<Node>;
 }
 const mountRoots: MountRoot[] = [];
 
@@ -45,14 +45,17 @@ function updateAll() {
 }
 
 
-abstract class Component {
+class Component<N extends Node | null = Node | null> {
+    readonly #node: N;
+    #container: Node | null = null;
+
     #parent: Component | null = null;
     #firstChild: Component | null = null;
     #lastChild: Component | null = null;
     #nextSibling: Component | null = null;
     #prevSibling: Component | null = null;
 
-    #updateGuard: (() => boolean) | undefined;
+    updateGuard: (() => boolean) | undefined;
     #updateHandlers: ThinVec<() => void> = null;
     #updateHandlerCount = 0; // count for subtree
     
@@ -60,14 +63,17 @@ abstract class Component {
     #mountHandlers: ThinVec<() => void> = null;
     #unmountHandlers: ThinVec<() => void> = null;
 
+    get node(): N { return this.#node; }
+
     get parent(): Component | null { return this.#parent; }
     get firstChild(): Component | null { return this.#firstChild; }
     get lastChild(): Component | null { return this.#lastChild; }
     get nextSibling(): Component | null { return this.#nextSibling; }
     get prevSibling(): Component | null { return this.#prevSibling; }
 
-    setUpdateGuard(updateGuard: () => boolean): void {
-        this.#updateGuard = updateGuard;
+    constructor(node: N) {
+        this.#node = node;
+        this.#container = node;
     }
 
     addUpdateHandler(handler: () => void): void {
@@ -77,7 +83,7 @@ abstract class Component {
 
     update(): void {
         ++touchedComponents;
-        if (this.#updateHandlerCount === 0 || !(this.#updateGuard?.() ?? true)) {
+        if (this.#updateHandlerCount === 0 || !(this.updateGuard?.() ?? true)) {
             skippedComponents += this.#treeSize() - 1;
             return;
         }
@@ -119,31 +125,64 @@ abstract class Component {
         }
     }
 
-    appendTemplate(template: TemplateItem): void {
-        if (template === null || typeof template === 'undefined') {
-            // ignore
-        } else if (Array.isArray(template)) {
-            for (const item of template) {
-                this.appendTemplate(item);
+    setAttributes(attributes: Attributes<N>): void {
+        for (const name in attributes) {
+            const value = attributes[name]! as unknown as Value<Scalar>;
+
+            if (typeof value === 'function' && name.startsWith('on')) {
+                switch (name) {
+                case 'onupdate':
+                    this.addUpdateHandler(value);
+                    break;
+                case 'onmount':
+                    this.addMountHandler(value);
+                    break;
+                case 'onunmount':
+                    this.addUnmountHandler(value);
+                    break;
+                default:
+                    this.#node?.addEventListener(name.substring(2), (ev) => {
+                        (value as EventListener)(ev);
+                        updateAll();
+                    });
+                    break;
+                }
+            } else if (name === 'style') {
+                if (!(this.#node instanceof HTMLElement)) {
+                    throw new Error('style attribute requires node to be HTMLElement');
+                }
+                const elem = this.#node;
+                const styles = value as Styles;
+                for (const styleName in styles) {
+                    this.addValueWatcher(styles[styleName]!, (scalar) => {
+                        elem.style[styleName] = scalar;
+                    });
+                }
+            } else {
+                if (!(this.#node instanceof Element)) {
+                    throw new Error('attribute requires node to be Element');
+                }
+                const elem = this.#node;
+                this.addValueWatcher(value, (scalar) => {
+                    setElementAttribute(elem, name, scalar);
+                });
             }
-        } else if (template instanceof Component) {
-            this.appendChild(template);
-        } else {
-            this.appendChild(Txt(template));
         }
     }
 
-    getNodes(): Node[] {
-        const nodes: Node[] = [];
-        this.forEachNode((node) => nodes.push(node));
-        return nodes;
+    appendFragment(fragment: FragmentItem): void {
+        if (fragment === null || typeof fragment === 'undefined') {
+            // ignore
+        } else if (Array.isArray(fragment)) {
+            for (const item of fragment) {
+                this.appendFragment(item);
+            }
+        } else if (fragment instanceof Component) {
+            this.appendChild(fragment);
+        } else {
+            this.appendChild(Txt(fragment));
+        }
     }
-
-    abstract get firstNode(): Node | null;
-    abstract get lastNode(): Node | null;
-    abstract forEachNode(handler: (node: Node) => void): void;
-    abstract maybeSetChildContainerNode(node: Node | null): void;
-    abstract getChildContainerNode(): Node | null;
 
     appendChild(child: Component): void {
         this.#attachComponent(child);
@@ -193,7 +232,7 @@ abstract class Component {
         if (this.#parent) {
             throw new Error('expected no parent component');
         }
-        const mountPoint = new NodeComponent(mountPointNode);
+        const mountPoint = new Component(mountPointNode);
         mountPoint.#doMount();
         mountPoint.appendChild(this);
         mountRoots.push({
@@ -270,12 +309,12 @@ abstract class Component {
             component.update();
         }
         
-        const container = this.getChildContainerNode();
+        const container = this.#container;
         if (container) {
-            component.maybeSetChildContainerNode(container);
+            component.#maybeSetChildContainerNode(container);
 
             const referenceNode = (before ? before.#getFirstNodeGoingForward() : this.#getFirstNodeGoingBackward()?.nextSibling) ?? null;
-            component.forEachNode((node) => {
+            component.#forEachNode((node) => {
                 container.insertBefore(node, referenceNode);
             });
         }
@@ -320,9 +359,9 @@ abstract class Component {
             this.#doUnmount();
         }
         
-        const container = parent.getChildContainerNode();
+        const container = parent.#container;
         if (container) {
-            this.forEachNode((node) => {
+            this.#forEachNode((node) => {
                 container.removeChild(node);
             });
         }
@@ -341,20 +380,67 @@ abstract class Component {
         this.#nextSibling = null;
         this.#parent = null;
 
-        this.maybeSetChildContainerNode(null);
+        this.#maybeSetChildContainerNode(null);
         parent.#addUpdateHandlerCount(-this.#updateHandlerCount);
     }
 
-    #getFirstNodeGoingBackward(): Node | null {
-        for (let c: Component | null = this; c; c = c.#prevSibling) {
-            const node = c.lastNode;
+    #maybeSetChildContainerNode(node: Node | null): void {
+        if (this.#node) {
+            // if this.#node is non-null then it will always be the child container node
+            return;
+        }
+        this.#container = node;
+        for (let c = this.#firstChild; c; c = c.#nextSibling) {
+            c.#maybeSetChildContainerNode(node);
+        }
+    }
+
+    #forEachNode(handler: (node: Node) => void): void {
+        if (this.#node) {
+            handler(this.#node);
+            return;
+        }
+        for (let c = this.#firstChild; c; c = c.#nextSibling) {
+            c.#forEachNode(handler);
+        }
+    }
+
+    #getFirstNode(): Node | null {
+        if (this.#node) {
+            return this.#node;
+        }
+        for (let c = this.#firstChild; c; c = c.#nextSibling) {
+            const node = c.#getFirstNode();
             if (node) {
                 return node;
             }
         }
-        for (let parent = this.#parent; parent instanceof FragmentComponent; parent = parent.#parent) {
+        return null;
+    }
+
+    #getLastNode(): Node | null {
+        if (this.#node) {
+            return this.#node;
+        }
+        for (let c = this.#lastChild; c; c = c.#prevSibling) {
+            const node = c.#getLastNode();
+            if (node) {
+                return node;
+            }
+        }
+        return null;
+    }
+
+    #getFirstNodeGoingBackward(): Node | null {
+        for (let c: Component | null = this; c; c = c.#prevSibling) {
+            const node = c.#getLastNode();
+            if (node) {
+                return node;
+            }
+        }
+        for (let parent = this.#parent; parent && !parent.#node; parent = parent.#parent) {
             for (let c: Component | null = parent.#prevSibling; c; c = c.#prevSibling) {
-                const node = c.lastNode;
+                const node = c.#getLastNode();
                 if (node) {
                     return node;
                 }
@@ -365,14 +451,14 @@ abstract class Component {
 
     #getFirstNodeGoingForward(): Node | null {
         for (let c: Component | null = this; c; c = c.#nextSibling) {
-            const node = c.firstNode;
+            const node = c.#getFirstNode();
             if (node) {
                 return node;
             }
         }
-        for (let parent = this.#parent; parent instanceof FragmentComponent; parent = parent.#parent) {
+        for (let parent = this.#parent; parent && !parent.#node; parent = parent.#parent) {
             for (let c: Component | null = parent.#nextSibling; c; c = c.#nextSibling) {
-                const node = c.firstNode;
+                const node = c.#getFirstNode();
                 if (node) {
                     return node;
                 }
@@ -382,126 +468,7 @@ abstract class Component {
     }
 }
 
-class FragmentComponent extends Component {
-    #container: Node | null = null;
-
-    override get firstNode(): Node | null {
-        for (let c = this.firstChild; c; c = c.nextSibling) {
-            const node = c.firstNode;
-            if (node) {
-                return node;
-            }
-        }
-        return null;
-    }
-
-    override get lastNode(): Node | null {
-        for (let c = this.lastChild; c; c = c.prevSibling) {
-            const node = c.lastNode;
-            if (node) {
-                return node;
-            }
-        }
-        return null;
-    }
-
-    override forEachNode(handler: (node: Node) => void): void {
-        for (let c = this.firstChild; c; c = c.nextSibling) {
-            c.forEachNode(handler);
-        }
-    }
-
-    override maybeSetChildContainerNode(node: Node | null): void {
-        this.#container = node;
-        for (let c = this.firstChild; c; c = c.nextSibling) {
-            c.maybeSetChildContainerNode(node);
-        }
-    }
-
-    override getChildContainerNode(): Node | null {
-        return this.#container;
-    }
-}
-
-class NodeComponent<N extends Node = Node> extends Component {
-    readonly #node: N;
-
-    constructor(node: N) {
-        super();
-        this.#node = node;
-    }
-
-    get node() {
-        return this.#node;
-    }
-
-    override get firstNode(): Node | null {
-        return this.#node;
-    }
-
-    override get lastNode(): Node | null {
-        return this.#node;
-    }
-
-    override forEachNode(handler: (node: Node) => void): void {
-        handler(this.#node);
-    }
-
-    override maybeSetChildContainerNode(node: Node | null): void {
-        // this.node is always the container for child component nodes
-    }
-
-    override getChildContainerNode(): Node | null {
-        return this.#node;
-    }
-    
-    setAttributes(attributes: Attributes<N>): void {
-        for (const name in attributes) {
-            const value = attributes[name]! as unknown as Value<Scalar>;
-
-            if (typeof value === 'function' && name.startsWith('on')) {
-                switch (name) {
-                case 'onupdate':
-                    this.addUpdateHandler(value);
-                    break;
-                case 'onmount':
-                    this.addMountHandler(value);
-                    break;
-                case 'onunmount':
-                    this.addUnmountHandler(value);
-                    break;
-                default:
-                    this.#node.addEventListener(name.substring(2), (ev) => {
-                        (value as EventListener)(ev);
-                        updateAll();
-                    });
-                    break;
-                }
-            } else if (name === 'style') {
-                if (!(this.#node instanceof HTMLElement)) {
-                    throw new Error('style attribute requires node to be HTMLElement');
-                }
-                const elem = this.#node;
-                const styles = value as Styles;
-                for (const styleName in styles) {
-                    this.addValueWatcher(styles[styleName]!, (scalar) => {
-                        elem.style[styleName] = scalar;
-                    });
-                }
-            } else {
-                if (!(this.#node instanceof Element)) {
-                    throw new Error('attribute requires node to be Element');
-                }
-                const elem = this.#node;
-                this.addValueWatcher(value, (scalar) => {
-                    setAttribute(elem, name, scalar);
-                });
-            }
-        }
-    }
-}
-
-function setAttribute(elem: Element, name: string, value: Scalar): void {
+function setElementAttribute(elem: Element, name: string, value: Scalar): void {
     if (name in elem) {
         (elem as any)[name] = value;
     } else if (typeof value === 'boolean') {
@@ -523,10 +490,10 @@ function setAttribute(elem: Element, name: string, value: Scalar): void {
 function H<K extends keyof HTMLElementTagNameMap>(
     tag: K,
     attributes: null | Attributes<HTMLElementTagNameMap[K]> = null,
-    ...children: TemplateItem[]
-): NodeComponent<HTMLElementTagNameMap[K]>  {
-    const component = new NodeComponent(document.createElement(tag));
-    component.appendTemplate(children);
+    ...children: FragmentItem[]
+): Component<HTMLElementTagNameMap[K]>  {
+    const component = new Component(document.createElement(tag));
+    component.appendFragment(children);
     if (attributes) {
         component.setAttributes(attributes);
     }
@@ -534,8 +501,8 @@ function H<K extends keyof HTMLElementTagNameMap>(
 }
 
 
-function Txt(value: Value<Scalar>): NodeComponent<Text> {
-    const component = new NodeComponent(document.createTextNode(''));
+function Txt(value: Value<Scalar>): Component<Text> {
+    const component = new Component(document.createTextNode(''));
     component.addValueWatcher(value, (scalar) => {
         component.node.nodeValue = scalar?.toString() ?? '';
     });
@@ -543,38 +510,43 @@ function Txt(value: Value<Scalar>): NodeComponent<Text> {
 }
 
 
-function Fragment(...template: TemplateItem[]): FragmentComponent {
-    const fragment = new FragmentComponent();
-    fragment.appendTemplate(template);
-    return fragment;
-}
-
-
-function instantiateTemplate(item: TemplateItem): Component | null {
-    const fragment = new FragmentComponent();
-    fragment.appendTemplate(item);
-    if (!fragment.firstChild) {
-        return null;
-    }
-    const firstChild = fragment.firstChild;
-    if (!firstChild.nextSibling) {
-        fragment.clear();
+function Fragment(...items: FragmentItem[]): Component {
+    const component = new Component(null);
+    component.appendFragment(items);
+    const firstChild = component.firstChild;
+    if (firstChild && !firstChild.nextSibling) {
+        component.clear();
         return firstChild;
     }
-    return fragment;
+    return component;
 }
 
 
-function With<T>(input: Value<T>, mapper: (v: T) => Component | null): Component | null {
-    if (typeof input !== 'function') {
-        return mapper(input);
+function FragmentOrNull(...items: FragmentItem[]): Component | null {
+    const component = new Component(null);
+    component.appendFragment(items);
+    if (!component.firstChild) {
+        return null;
     }
-    const root = Fragment();
+    const firstChild = component.firstChild;
+    if (!firstChild.nextSibling) {
+        component.clear();
+        return firstChild;
+    }
+    return component;
+}
+
+
+function With<T>(input: Value<T>, mapper: (v: T) => FragmentItem | null): Component | null {
+    if (typeof input !== 'function') {
+        return FragmentOrNull(mapper(input));
+    }
+    const root = new Component(null);
     const componentCache: Map<T, Component | null> = new Map();
     root.addValueWatcher(input, (v) => {
         let component = componentCache.get(v);
         if (typeof component === 'undefined') {
-            component = mapper(v);
+            component = FragmentOrNull(mapper(v));
             componentCache.set(v, component);
         }
         root.clear();
@@ -588,11 +560,11 @@ function With<T>(input: Value<T>, mapper: (v: T) => Component | null): Component
 
 function If(
     predicate: Value<boolean>,
-    thenCase: TemplateItem,
-    elseCase?: TemplateItem
+    thenFragment: FragmentItem,
+    elseFragment?: FragmentItem
 ): Component | null {
-    const thenComponent = instantiateTemplate(thenCase);
-    const elseComponent = instantiateTemplate(elseCase);
+    const thenComponent = FragmentOrNull(thenFragment);
+    const elseComponent = FragmentOrNull(elseFragment);
     return With(predicate, (pred) => {
         return pred ? thenComponent : elseComponent;
     });
@@ -603,12 +575,12 @@ interface CaseEntry<T> {
     value: T | typeof NULL;
     component: Component | null;
 }
-function Case<T>(value: T, ...template: TemplateItem[]): CaseEntry<T> {
-    const component = instantiateTemplate(template);
+function Case<T>(value: T, ...fragment: FragmentItem[]): CaseEntry<T> {
+    const component = FragmentOrNull(fragment);
     return { value, component };
 }
-function Default<T>(...template: TemplateItem[]): CaseEntry<T> {
-    const component = instantiateTemplate(template);
+function Default<T>(...fragment: FragmentItem[]): CaseEntry<T> {
+    const component = FragmentOrNull(fragment);
     return { value: NULL, component };
 }
 function Switch<T>(value: Value<T>, ...cases: CaseEntry<T>[]): Component | null {
@@ -636,11 +608,11 @@ function Switch<T>(value: Value<T>, ...cases: CaseEntry<T>[]): Component | null 
 }
 
 
-function For<T extends { key: string }>(itemsValue: Value<T[]>, itemFunc: (item: T) => NodeComponent): FragmentComponent {
+function For<T extends { key: string }>(itemsValue: Value<T[]>, itemFunc: (item: T) => Component): Component {
     let prevItems: T[] = [];
-    let components: { [key: string]: NodeComponent } = {};
+    let components: { [key: string]: Component } = {};
 
-    function getComponent(item: T): NodeComponent {
+    function getComponent(item: T): Component {
         let component = components[item.key];
         if (!component) {
             component = itemFunc(item);
@@ -649,7 +621,7 @@ function For<T extends { key: string }>(itemsValue: Value<T[]>, itemFunc: (item:
         return component;
     }
 
-    const root = Fragment();
+    const root = new Component(null);
     root.addUpdateHandler(() => {
         const items = typeof itemsValue === 'function' ? itemsValue() : itemsValue;
 
@@ -696,8 +668,8 @@ function Button(props: {
 
 With(1, (v) => {
     switch (v) {
-    case 1: return Txt("foo");
-    case 2: return Txt("bar");
+    case 1: return 'foo';
+    case 2: return 'bar';
     default: return null;
     }
 });
@@ -792,7 +764,7 @@ const todoItems: TodoItemModel[] = [
     //createTodoItem('Sell laptop'),
 ];
 
-//TodoListView(todoItems).mount(document.body);
+TodoListView(todoItems).mount(document.body);
 
 
 
