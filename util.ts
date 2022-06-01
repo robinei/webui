@@ -1,8 +1,12 @@
 // ThinVec avoids the array allocation for vectors of length 0 or 1 (but you can't use arrays as item type!)
-export type ThinVec<T> = null | T | T[];
+export type ThinVec<T> = Empty | T | T[];
+
+class Empty {}
+
+export const tvEmpty = new Empty();
 
 export function tvLength<T>(vec: ThinVec<T>): number {
-    if (vec === null) {
+    if (vec instanceof Empty) {
         return 0;
     }
     if (!Array.isArray(vec)) {
@@ -12,7 +16,7 @@ export function tvLength<T>(vec: ThinVec<T>): number {
 }
 
 export function tvPush<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
-    if (vec === null) {
+    if (vec instanceof Empty) {
         return value;
     }
     if (!Array.isArray(vec)) {
@@ -23,8 +27,8 @@ export function tvPush<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
 }
 
 export function tvPop<T>(vec: ThinVec<T>): ThinVec<T> {
-    if (vec === null || !Array.isArray(vec)) {
-        return null;
+    if (vec instanceof Empty || !Array.isArray(vec)) {
+        return tvEmpty;
     }
     vec.pop();
     if (vec.length === 1) {
@@ -34,8 +38,8 @@ export function tvPop<T>(vec: ThinVec<T>): ThinVec<T> {
 }
 
 export function tvRemove<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
-    if (vec == null || vec === value) {
-        return null;
+    if (vec instanceof Empty || vec === value) {
+        return tvEmpty;
     }
     if (!Array.isArray(vec)) {
         return vec; // not found (would have hit previous case)
@@ -45,7 +49,7 @@ export function tvRemove<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
         return vec; // not found
     }
     switch (vec.length) {
-    case 1: return null;
+    case 1: return tvEmpty;
     case 2: return i == 0 ? vec[1]! : vec[0]!;
     }
     vec.splice(i, 1);
@@ -53,7 +57,7 @@ export function tvRemove<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
 }
 
 export function tvLast<T>(vec: ThinVec<T>): T | undefined {
-    if (vec === null) {
+    if (vec instanceof Empty) {
         return undefined;
     }
     if (!Array.isArray(vec)) {
@@ -63,7 +67,7 @@ export function tvLast<T>(vec: ThinVec<T>): T | undefined {
 }
 
 export function tvForEach<T>(vec: ThinVec<T>, func: (value: T) => void): void {
-    if (vec === null) {
+    if (vec instanceof Empty) {
         return;
     }
     if (!Array.isArray(vec)) {
@@ -76,7 +80,7 @@ export function tvForEach<T>(vec: ThinVec<T>, func: (value: T) => void): void {
 }
 
 function tvRunTests() {
-    let vec: ThinVec<number> = null;
+    let vec: ThinVec<number> = tvEmpty;
 
     vec = tvPush(vec, 0);
     vec = tvPush(vec, 1);

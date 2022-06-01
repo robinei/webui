@@ -1,4 +1,4 @@
-import { ThinVec, tvPush, tvRemove, tvLength, tvForEach, tvLast, tvPop } from './util';
+import { ThinVec, tvPush, tvRemove, tvLength, tvForEach, tvLast, tvPop, tvEmpty } from './util';
 
 type Scalar = null | undefined | string | number | boolean;
 
@@ -17,36 +17,21 @@ type AttributesImpl<T> = {
 };
 
 type Attributes<T> = AttributesImpl<T & {
-    onupdate: () => void;
+    onupdate: UpdateHandler;
     onmount: () => void;
     onunmount: () => void;
 }>;
 
+type UpdateHandler = () => void | false;
 
-const NULL = { _tag: 'NULL' } as const;
-
-interface MountRoot {
-    component: Component;
-    mountPoint: Component<Node>;
-}
-const mountRoots: MountRoot[] = [];
-
-var updaterCount = 0;
-var touchedComponents = 0;
-var skippedComponents = 0;
-function updateAll() {
-    updaterCount = 0;
-    touchedComponents = 0;
-    skippedComponents = 0;
-    for (const root of mountRoots) {
-        root.mountPoint.update();
-    }
-    console.log('Ran', updaterCount, 'updaters. Touched', touchedComponents, 'and skipped', skippedComponents, 'components.');
+function isConstValue<T>(value: Value<T>): value is T {
+    return typeof value !== 'function';
 }
 
 
 class Component<N extends Node | null = Node | null> {
     readonly #node: N;
+    readonly #name: string;
     #container: Node | null = null;
 
     #parent: Component | null = null;
@@ -55,15 +40,14 @@ class Component<N extends Node | null = Node | null> {
     #nextSibling: Component | null = null;
     #prevSibling: Component | null = null;
 
-    updateGuard: (() => boolean) | undefined;
-    #updateHandlers: ThinVec<() => void> = null;
-    #updateHandlerCount = 0; // count for subtree
-    
     #mounted = false;
-    #mountHandlers: ThinVec<() => void> = null;
-    #unmountHandlers: ThinVec<() => void> = null;
+    #mountHandlers: ThinVec<() => void> = tvEmpty;
+    #unmountHandlers: ThinVec<() => void> = tvEmpty;
+    #updateHandlers: ThinVec<() => void | false> = tvEmpty;
+    #updateHandlerCount = 0; // count for subtree
 
     get node(): N { return this.#node; }
+    get name(): string { return this.#name; }
 
     get parent(): Component | null { return this.#parent; }
     get firstChild(): Component | null { return this.#firstChild; }
@@ -71,68 +55,77 @@ class Component<N extends Node | null = Node | null> {
     get nextSibling(): Component | null { return this.#nextSibling; }
     get prevSibling(): Component | null { return this.#prevSibling; }
 
-    constructor(node: N) {
+
+    constructor(node: N, name?: string) {
         this.#node = node;
+        this.#name = name ?? node?.nodeName ?? 'Fragment';
         this.#container = node;
     }
 
-    addUpdateHandler(handler: () => void): void {
-        this.#updateHandlers = tvPush(this.#updateHandlers, handler);
-        this.#addUpdateHandlerCount(1);
+    mount(): Component<N> {
+        this.#mount();
+        this.update();
+        return this;
     }
 
-    update(): void {
-        ++touchedComponents;
-        if (this.#updateHandlerCount === 0 || !(this.updateGuard?.() ?? true)) {
-            skippedComponents += this.#treeSize() - 1;
-            return;
+    update(): Component<N> {
+        try {
+            this.#update();
+        } catch (e) {
+            if (e !== 'cancel') {
+                throw e;
+            }
         }
-        tvForEach(this.#updateHandlers, (handler) => {
-            updaterCount += 1;
-            handler();
-        });
-        for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            c.update();
-        }
+        return this;
     }
 
-    addMountHandler(handler: () => void): void {
+    addMountHandler(handler: () => void): Component<N> {
         this.#mountHandlers = tvPush(this.#mountHandlers, handler);
         if (this.#mounted) {
             handler();
         }
+        return this;
     }
 
-    addUnmountHandler(handler: () => void): void {
+    addUnmountHandler(handler: () => void): Component<N> {
         this.#unmountHandlers = tvPush(this.#unmountHandlers, handler);
+        return this;
     }
 
-    addValueWatcher<T>(value: Value<T>, watcher: (v: T) => void, checkEqual: boolean = true): void {
-        if (typeof value === 'function') {
-            const func = value as () => T;
-            let val: T | typeof NULL = NULL;
-            this.addUpdateHandler(checkEqual ? () => {
-                const newVal = func();
-                if (val !== newVal) {
-                    val = newVal;
-                    watcher(newVal);
-                }
-            } : () => {
-                watcher(func());
-            });
-        } else {
+    addUpdateHandler(handler: UpdateHandler): Component<N> {
+        this.#updateHandlers = tvPush(this.#updateHandlers, handler);
+        this.#addUpdateHandlerCount(1);
+        return this;
+    }
+
+    addValueWatcher<T>(value: Value<T>, watcher: (v: T) => void, equalCheck?: (a: T, b: T) => boolean): Component<N> {
+        if (isConstValue(value)) {
             watcher(value);
+            return this;
         }
+        const eql = equalCheck ?? ((a, b) => a === b);
+        const func = value as () => T;
+        let val: T;
+        let hasVal = false;
+        this.addUpdateHandler(() => {
+            const newVal = func();
+            if (!hasVal || !eql(val, newVal)) {
+                val = newVal;
+                hasVal = true;
+                watcher(newVal);
+            }
+        });
+        return this;
     }
 
-    setAttributes(attributes: Attributes<N>): void {
+    setAttributes(attributes: Attributes<N> | null): Component<N> {
         for (const name in attributes) {
             const value = attributes[name]! as unknown as Value<Scalar>;
 
             if (typeof value === 'function' && name.startsWith('on')) {
                 switch (name) {
                 case 'onupdate':
-                    this.addUpdateHandler(value);
+                    this.addUpdateHandler(value as UpdateHandler);
                     break;
                 case 'onmount':
                     this.addMountHandler(value);
@@ -168,54 +161,57 @@ class Component<N extends Node | null = Node | null> {
                 });
             }
         }
+        return this;
     }
 
-    appendFragment(fragment: FragmentItem): void {
-        if (fragment === null || typeof fragment === 'undefined') {
-            // ignore
-        } else if (Array.isArray(fragment)) {
-            for (const item of fragment) {
-                this.appendFragment(item);
-            }
-        } else if (fragment instanceof Component) {
-            this.appendChild(fragment);
-        } else {
-            this.appendChild(Txt(fragment));
-        }
+    appendFragment(fragment: FragmentItem): Component<N> {
+        iterateFragment(fragment, this.appendChild.bind(this));
+        return this;
     }
 
-    appendChild(child: Component): void {
+    appendChild(child: Component): Component<N> {
         this.#attachComponent(child);
+        return this;
     }
 
-    insertBefore(child: Component, reference: Component | null): void {
+    insertBefore(child: Component, reference: Component | null): Component<N> {
         this.#attachComponent(child, reference);
+        return this;
     }
 
-    insertAfter(child: Component, reference: Component | null): void {
+    insertAfter(child: Component, reference: Component | null): Component<N> {
         this.insertBefore(child, reference?.nextSibling ?? null);
+        return this;
     }
 
-    replaceChild(replacement: Component, replaced: Component): void {
+    replaceChild(replacement: Component, replaced: Component): Component<N> {
         this.#attachComponent(replacement, replaced);
         replaced.#detachFromParent();
+        return this;
     }
 
-    removeChild(child: Component): void {
+    removeChild(child: Component): Component<N> {
         if (child.#parent !== this) {
             throw new Error('not child of this node');
         }
         child.#detachFromParent();
+        return this;
     }
 
-    replaceChildren(children: Component[]): void {
-        this.clear();
+    appendChildren(children: Component[]): Component<N> {
         for (const child of children) {
             this.appendChild(child);
         }
+        return this;
     }
 
-    clear(): void {
+    replaceChildren(children: Component[]): Component<N> {
+        this.clear();
+        this.appendChildren(children);
+        return this;
+    }
+
+    clear(): Component<N> {
         for (;;) {
             const child = this.#firstChild;
             if (!child) {
@@ -223,55 +219,10 @@ class Component<N extends Node | null = Node | null> {
             }
             child.#detachFromParent();
         }
+        return this;
     }
 
-    mount(mountPointNode: Node): void {
-        if (this.#mounted) {
-            throw new Error('already mounted');
-        }
-        if (this.#parent) {
-            throw new Error('expected no parent component');
-        }
-        const mountPoint = new Component(mountPointNode);
-        mountPoint.#doMount();
-        mountPoint.appendChild(this);
-        mountRoots.push({
-            component: this,
-            mountPoint
-        });
-    }
-
-    unmount(): void {
-        if (!this.#mounted) {
-            throw new Error('not mounted');
-        }
-        for (let i = 0; i < mountRoots.length; ++i) {
-            if (mountRoots[i]!.component === this) {
-                mountRoots[i]!.mountPoint.clear();
-                mountRoots.splice(i, 1);
-                return;
-            }
-        }
-        throw new Error('not among mounted components');
-    }
-
-    #treeSize(): number {
-        let count = 1;
-        for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            count += c.#treeSize();
-        }
-        return count;
-    }
-
-    #addUpdateHandlerCount(diff: number): void {
-        let c: Component | null = this;
-        while (c) {
-            c.#updateHandlerCount += diff;
-            c = c.#parent;
-        }
-    }
-
-    #doMount(): void {
+    #mount(): void {
         if (this.#mounted) {
             throw new Error('already mounted');
         }
@@ -280,11 +231,11 @@ class Component<N extends Node | null = Node | null> {
             handler();
         });
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            c.#doMount();
+            c.#mount();
         }
     }
 
-    #doUnmount(): void {
+    #unmount(): void {
         if (!this.#mounted) {
             throw new Error('not mounted');
         }
@@ -293,7 +244,23 @@ class Component<N extends Node | null = Node | null> {
             handler();
         });
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            c.#doUnmount();
+            c.#unmount();
+        }
+    }
+
+    #update(): void {
+        ++touchedComponents;
+        if (this.#updateHandlerCount === 0) {
+            return;
+        }
+        tvForEach(this.#updateHandlers, (handler) => {
+            updaterCount += 1;
+            if (handler() === false) {
+                throw 'cancel';
+            }
+        });
+        for (let c = this.#firstChild; c; c = c.#nextSibling) {
+            c.#update();
         }
     }
 
@@ -306,14 +273,14 @@ class Component<N extends Node | null = Node | null> {
         }
         
         if (this.#mounted) {
-            component.update();
+            component.mount();
         }
         
         const container = this.#container;
         if (container) {
             component.#maybeSetChildContainerNode(container);
 
-            const referenceNode = (before ? before.#getFirstNodeGoingForward() : this.#getFirstNodeGoingBackward()?.nextSibling) ?? null;
+            const referenceNode = (before ? before.#getFirstNodeGoingForward() : this.#getLastNodeGoingBackward()?.nextSibling) ?? null;
             component.#forEachNode((node) => {
                 container.insertBefore(node, referenceNode);
             });
@@ -343,10 +310,6 @@ class Component<N extends Node | null = Node | null> {
         component.#parent = this;
 
         this.#addUpdateHandlerCount(component.#updateHandlerCount);
-
-        if (this.#mounted) {
-            component.#doMount();
-        }
     }
 
     #detachFromParent(): void {
@@ -356,7 +319,7 @@ class Component<N extends Node | null = Node | null> {
         }
 
         if (this.#mounted) {
-            this.#doUnmount();
+            this.#unmount();
         }
         
         const container = parent.#container;
@@ -431,7 +394,7 @@ class Component<N extends Node | null = Node | null> {
         return null;
     }
 
-    #getFirstNodeGoingBackward(): Node | null {
+    #getLastNodeGoingBackward(): Node | null {
         for (let c: Component | null = this; c; c = c.#prevSibling) {
             const node = c.#getLastNode();
             if (node) {
@@ -466,7 +429,14 @@ class Component<N extends Node | null = Node | null> {
         }
         return null;
     }
+
+    #addUpdateHandlerCount(diff: number): void {
+        for (let c: Component | null = this; c; c = c.#parent) {
+            c.#updateHandlerCount += diff;
+        }
+    }
 }
+
 
 function setElementAttribute(elem: Element, name: string, value: Scalar): void {
     if (name in elem) {
@@ -487,72 +457,113 @@ function setElementAttribute(elem: Element, name: string, value: Scalar): void {
 }
 
 
+function printComponentTree(root: Component) {
+    const result: string[] = [];
+    recurse(root, 0);
+    const text = result.join('');
+    console.log(text);
+    
+    function recurse(component: Component, depth: number) {
+        let indent = '';
+        for (let i = 0; i < depth; ++i) {
+            indent += '  ';
+        }
+        result.push(indent);
+        result.push(component.name);
+        if (component.node instanceof Text) {
+            result.push(': ');
+            result.push(JSON.stringify(component.node.nodeValue));
+        }
+        result.push('\n');
+        for (let c = component.firstChild; c; c = c.nextSibling) {
+            recurse(c, depth + 1);
+        }
+    }
+}
+
+
+function componentTreeSize(component: Component): number {
+    let count = 1;
+    for (let c = component.firstChild; c; c = c.nextSibling) {
+        count += componentTreeSize(c);
+    }
+    return count;
+}
+
+
+function iterateFragment(fragment: FragmentItem, handler: (component: Component) => void): void {
+    if (fragment === null || typeof fragment === 'undefined') {
+        // ignore
+    } else if (fragment instanceof Component) {
+        handler(fragment);
+    } else if (Array.isArray(fragment)) {
+        for (const item of fragment) {
+            iterateFragment(item, handler);
+        }
+    } else {
+        handler(Txt(fragment));
+    }
+}
+
+
+function flattenFragment(fragment: FragmentItem): Component[] {
+    const components: Component[] = [];
+    iterateFragment(fragment, components.push.bind(components));
+    return components;
+}
+
+
+function fragmentToComponentOrNull(fragment: FragmentItem): Component | null {
+    const components = flattenFragment(fragment);
+    if (components.length === 0) {
+        return null;
+    }
+    if (components.length === 1) {
+        return components[0]!;
+    }
+    const component = new Component(null);
+    component.appendFragment(components);
+    return component;
+}
+
+
 function H<K extends keyof HTMLElementTagNameMap>(
     tag: K,
-    attributes: null | Attributes<HTMLElementTagNameMap[K]> = null,
+    attributes: Attributes<HTMLElementTagNameMap[K]> | null = null,
     ...children: FragmentItem[]
 ): Component<HTMLElementTagNameMap[K]>  {
-    const component = new Component(document.createElement(tag));
-    component.appendFragment(children);
-    if (attributes) {
-        component.setAttributes(attributes);
-    }
-    return component;
+    return new Component(document.createElement(tag))
+        .setAttributes(attributes)
+        .appendFragment(children);
 }
 
 
 function Txt(value: Value<Scalar>): Component<Text> {
-    const component = new Component(document.createTextNode(''));
-    component.addValueWatcher(value, (scalar) => {
-        component.node.nodeValue = scalar?.toString() ?? '';
+    const node = document.createTextNode('');
+    return new Component(node).addValueWatcher(value, (scalar) => {
+        node.nodeValue = scalar?.toString() ?? '';
     });
-    return component;
 }
 
 
 function Fragment(...items: FragmentItem[]): Component {
-    const component = new Component(null);
-    component.appendFragment(items);
-    const firstChild = component.firstChild;
-    if (firstChild && !firstChild.nextSibling) {
-        component.clear();
-        return firstChild;
-    }
-    return component;
+    return new Component(null).appendFragment(items);
 }
 
 
-function FragmentOrNull(...items: FragmentItem[]): Component | null {
-    const component = new Component(null);
-    component.appendFragment(items);
-    if (!component.firstChild) {
-        return null;
+function With<T extends Scalar>(input: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component | null {
+    if (isConstValue(input)) {
+        return fragmentToComponentOrNull(mapper(input));
     }
-    const firstChild = component.firstChild;
-    if (!firstChild.nextSibling) {
-        component.clear();
-        return firstChild;
-    }
-    return component;
-}
-
-
-function With<T>(input: Value<T>, mapper: (v: T) => FragmentItem | null): Component | null {
-    if (typeof input !== 'function') {
-        return FragmentOrNull(mapper(input));
-    }
-    const root = new Component(null);
-    const componentCache: Map<T, Component | null> = new Map();
+    const root = new Component(null, name ?? 'With');
+    const fragmentCache: Map<T, Component[]> = new Map();
     root.addValueWatcher(input, (v) => {
-        let component = componentCache.get(v);
-        if (typeof component === 'undefined') {
-            component = FragmentOrNull(mapper(v));
-            componentCache.set(v, component);
+        let fragment = fragmentCache.get(v);
+        if (typeof fragment === 'undefined') {
+            fragment = flattenFragment(mapper(v));
+            fragmentCache.set(v, fragment);
         }
-        root.clear();
-        if (component) {
-            root.appendChild(component);
-        }
+        root.replaceChildren(fragment);
     });
     return root;
 }
@@ -563,54 +574,39 @@ function If(
     thenFragment: FragmentItem,
     elseFragment?: FragmentItem
 ): Component | null {
-    const thenComponent = FragmentOrNull(thenFragment);
-    const elseComponent = FragmentOrNull(elseFragment);
     return With(predicate, (pred) => {
-        return pred ? thenComponent : elseComponent;
-    });
+        return pred ? thenFragment : elseFragment;
+    }, 'If');
 }
 
 
-interface CaseEntry<T> {
-    value: T | typeof NULL;
-    component: Component | null;
-}
-function Case<T>(value: T, ...fragment: FragmentItem[]): CaseEntry<T> {
-    const component = FragmentOrNull(fragment);
-    return { value, component };
-}
-function Default<T>(...fragment: FragmentItem[]): CaseEntry<T> {
-    const component = FragmentOrNull(fragment);
-    return { value: NULL, component };
-}
-function Switch<T>(value: Value<T>, ...cases: CaseEntry<T>[]): Component | null {
-    const caseMap: Map<T, Component | null> = new Map();
-    let defaultComponent: Component | null = null;
-    let foundDefault = false;
-    for (const c of cases) {
-        if (foundDefault) {
-            throw new Error('Default expected to be last, if present');
-        }
-        if (c.value === NULL) {
-            defaultComponent = c.component;
-            foundDefault = true;
-        } else {
-            caseMap.set(c.value as T, c.component);
-        }
-    }
+function Match<T extends Scalar>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component | null {
     return With(value, (v: T) => {
-        const component = caseMap.get(v);
-        if (typeof component !== 'undefined') {
-            return component;
+        for (const [matcher, ...fragment] of cases) {
+            if (typeof matcher === 'function' ? matcher(v) : v === matcher) {
+                return fragment;
+            }
         }
-        return defaultComponent;
-    });
+        return null;
+    }, 'Match');
+}
+function Else<T>(_: T): true {
+    return true;
 }
 
 
 function For<T extends { key: string }>(itemsValue: Value<T[]>, itemFunc: (item: T) => Component): Component {
-    let prevItems: T[] = [];
     let components: { [key: string]: Component } = {};
+    const root = new Component(null, 'For');
+
+    root.addValueWatcher(itemsValue, (items) => {
+        root.clear();
+        for (const item of items) {
+            root.appendChild(getComponent(item));
+        }
+    }, listsEqual);
+    
+    return root;
 
     function getComponent(item: T): Component {
         let component = components[item.key];
@@ -620,20 +616,6 @@ function For<T extends { key: string }>(itemsValue: Value<T[]>, itemFunc: (item:
         }
         return component;
     }
-
-    const root = new Component(null);
-    root.addUpdateHandler(() => {
-        const items = typeof itemsValue === 'function' ? itemsValue() : itemsValue;
-
-        if (listsEqual(prevItems, items)) {
-            return;
-        }
-
-        root.clear();
-        for (const item of items) {
-            root.appendChild(getComponent(item));
-        }
-    });
 
     function listsEqual(a: T[], b: T[]): boolean {
         if (a.length != b.length) {
@@ -646,39 +628,49 @@ function For<T extends { key: string }>(itemsValue: Value<T[]>, itemFunc: (item:
         }
         return true;
     }
-
-    return root;
-}
-
-
-function Button(props: {
-    title: Value<string>;
-    onclick(): void;
-}) {
-    return H('div', {
-            className: 'button',
-            onclick: props.onclick
-        },
-        H('b', null, props.title)
-    );
 }
 
 
 
 
-With(1, (v) => {
-    switch (v) {
-    case 1: return 'foo';
-    case 2: return 'bar';
-    default: return null;
+
+
+interface TodoItemModel {
+    title: string;
+    done: boolean;
+    index: number;
+    key: string;
+}
+
+class TodoListModel {
+    private items: TodoItemModel[] = [];
+    private keyCounter = 0;
+
+    addItem(title: string): void {
+        this.items = [...this.items, {
+            title,
+            done: false,
+            index: this.items.length,
+            key: (++this.keyCounter).toString()
+        }];
     }
-});
 
-Switch(1,
-    Case(1, "foo"),
-    Case(2, "bar"),
-    Default(null));
+    setItemDone(key: string, done: boolean): void {
+        this.items = this.items.map((item) => (item.key !== key ? item : { ...item, done }));
+    }
 
+    setAllDone = () => {
+        this.items = this.items.map((item) => ({ ...item, done: true }));
+    };
+
+    setNoneDone = () => {
+        this.items = this.items.map((item) => ({ ...item, done: true }));
+    };
+
+    getItems = () => {
+        return this.items;
+    };
+}
 
 function TodoItemView(item: TodoItemModel) {
     return H('div', {
@@ -700,71 +692,34 @@ function TodoItemView(item: TodoItemModel) {
     );
 }
 
-function TodoListView(items: TodoItemModel[]) {
+function TodoListView(model: TodoListModel) {
     const input = H('input');
-    return H('div', {
-            onupdate() {
-                for (let i = 0; i < items.length; ++i) {
-                    items[i]!.index = i;
-                }
-            }
-        },
+    return H('div', null,
         'Todo:',
         H('br'),
         input,
         H('button', {
             onclick() {
-                items.push(createTodoItem(input.node.value));
+                model.addItem(input.node.value);
                 input.node.value = '';
             }
         }, 'Add'),
         H('br'),
         H('button', {
-            onclick() { for (const item of items) item.done = false; }
+            onclick: model.setNoneDone
         }, 'Select none'),
         H('button', {
-            onclick() { for (const item of items) item.done = true; }
+            onclick: model.setAllDone
         }, 'Select all'),
-        If(() => !(items.length % 2),
-            'even',
-            H('span', {
-                onmount() {
-                    console.log('mounted');
-                },
-                onunmount() {
-                    console.log('unmounted');
-                },
-            }, 'odd')
-        ),
-        For(items, TodoItemView),
+        Match(() => model.getItems().length % 2,
+            [0, 'even'],
+            [1, Txt('odd')
+                    .addMountHandler(() => console.log('mounted'))
+                    .addUnmountHandler(() => console.log('unmounted'))]),
+        For(model.getItems, TodoItemView),
     );
 }
 
-
-
-interface TodoItemModel {
-    title: string;
-    done: boolean;
-    index: number;
-    key: string;
-}
-
-let keyCounter = 0;
-function createTodoItem(title: string): TodoItemModel {
-    return {
-        title,
-        done: false,
-        index: 0,
-        key: (++keyCounter).toString()
-    };
-}
-
-const todoItems: TodoItemModel[] = [
-    createTodoItem('Bake bread'),
-    //createTodoItem('Sell laptop'),
-];
-
-TodoListView(todoItems).mount(document.body);
 
 
 
@@ -790,9 +745,27 @@ function TestComponent() {
     );
 
     function CheckBox() {
-        const cb = H('input', { type: 'checkbox', onchange: updateAll });
+        const cb = H('input', { type: 'checkbox', onchange: () => {} });
         return [cb, () => cb.node.checked] as const;
     }
 }
 
-TestComponent().mount(document.body);
+
+
+let updaterCount = 0;
+let touchedComponents = 0;
+function updateAll() {
+    updaterCount = 0;
+    touchedComponents = 0;
+    bodyComponent.update();
+    printComponentTree(bodyComponent);
+    console.log('Ran', updaterCount, 'updaters. Touched', touchedComponents, 'of', componentTreeSize(bodyComponent), 'components.');
+}
+
+const todoListModel = new TodoListModel();
+todoListModel.addItem('Bake bread');
+
+const bodyComponent = new Component(document.body);
+bodyComponent.appendChild(TodoListView(todoListModel));
+bodyComponent.appendChild(TestComponent());
+bodyComponent.mount();
