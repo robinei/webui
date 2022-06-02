@@ -1,12 +1,10 @@
 // ThinVec avoids the array allocation for vectors of length 0 or 1 (but you can't use arrays as item type!)
-export type ThinVec<T> = Empty | T | T[];
+export type ThinVec<T> = typeof tvEmpty | T | T[];
 
-class Empty {}
-
-export const tvEmpty = new Empty();
+export const tvEmpty: unique symbol = Symbol();
 
 export function tvLength<T>(vec: ThinVec<T>): number {
-    if (vec instanceof Empty) {
+    if (vec === tvEmpty) {
         return 0;
     }
     if (!Array.isArray(vec)) {
@@ -16,7 +14,7 @@ export function tvLength<T>(vec: ThinVec<T>): number {
 }
 
 export function tvPush<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
-    if (vec instanceof Empty) {
+    if (vec === tvEmpty) {
         return value;
     }
     if (!Array.isArray(vec)) {
@@ -27,7 +25,7 @@ export function tvPush<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
 }
 
 export function tvPop<T>(vec: ThinVec<T>): ThinVec<T> {
-    if (vec instanceof Empty || !Array.isArray(vec)) {
+    if (vec === tvEmpty || !Array.isArray(vec)) {
         return tvEmpty;
     }
     vec.pop();
@@ -38,7 +36,7 @@ export function tvPop<T>(vec: ThinVec<T>): ThinVec<T> {
 }
 
 export function tvRemove<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
-    if (vec instanceof Empty || vec === value) {
+    if (vec === tvEmpty || vec === value) {
         return tvEmpty;
     }
     if (!Array.isArray(vec)) {
@@ -57,7 +55,7 @@ export function tvRemove<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
 }
 
 export function tvLast<T>(vec: ThinVec<T>): T | undefined {
-    if (vec instanceof Empty) {
+    if (vec === tvEmpty) {
         return undefined;
     }
     if (!Array.isArray(vec)) {
@@ -67,7 +65,7 @@ export function tvLast<T>(vec: ThinVec<T>): T | undefined {
 }
 
 export function tvForEach<T>(vec: ThinVec<T>, func: (value: T) => void): void {
-    if (vec instanceof Empty) {
+    if (vec === tvEmpty) {
         return;
     }
     if (!Array.isArray(vec)) {

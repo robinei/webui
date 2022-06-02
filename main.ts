@@ -1,4 +1,4 @@
-import { ThinVec, tvPush, tvRemove, tvLength, tvForEach, tvLast, tvPop, tvEmpty } from './util';
+import { ThinVec, tvPush, tvForEach, tvEmpty } from './util';
 
 type Scalar = null | undefined | string | number | boolean;
 
@@ -18,20 +18,24 @@ type AttributesImpl<T> = {
 
 type Attributes<T> = AttributesImpl<T & {
     onupdate: UpdateHandler;
-    onmount: () => void;
-    onunmount: () => void;
+    onmount: MountHandler;
+    onunmount: UnmountHandler;
 }>;
 
-type UpdateHandler = () => void | false;
+type MountHandler = (this: Component) => void;
+type UnmountHandler = (this: Component) => void;
+type UpdateHandler = (this: Component) => void | false;
 
-function isConstValue<T>(value: Value<T>): value is T {
-    return typeof value !== 'function';
+class Context<T> {
+    #name: string;
+    get name(): string { return this.#name; }
+    constructor(name: string) { this.#name = name; }
 }
 
 
 class Component<N extends Node | null = Node | null> {
     readonly #node: N;
-    readonly #name: string;
+    readonly #name: string | undefined;
     #container: Node | null = null;
 
     #parent: Component | null = null;
@@ -46,8 +50,10 @@ class Component<N extends Node | null = Node | null> {
     #updateHandlers: ThinVec<() => void | false> = tvEmpty;
     #updateHandlerCount = 0; // count for subtree
 
+    #contextValues: Map<Context<unknown>, unknown> | undefined;
+
     get node(): N { return this.#node; }
-    get name(): string { return this.#name; }
+    get name(): string { return this.#name ?? this.#node?.nodeName ?? 'Fragment'; }
 
     get parent(): Component | null { return this.#parent; }
     get firstChild(): Component | null { return this.#firstChild; }
@@ -58,49 +64,34 @@ class Component<N extends Node | null = Node | null> {
 
     constructor(node: N, name?: string) {
         this.#node = node;
-        this.#name = name ?? node?.nodeName ?? 'Fragment';
+        this.#name = name;
         this.#container = node;
     }
 
-    mount(): Component<N> {
-        this.#mount();
-        this.update();
-        return this;
-    }
-
-    update(): Component<N> {
-        try {
-            this.#update();
-        } catch (e) {
-            if (e !== 'cancel') {
-                throw e;
-            }
-        }
-        return this;
-    }
-
-    addMountHandler(handler: () => void): Component<N> {
-        this.#mountHandlers = tvPush(this.#mountHandlers, handler);
+    addMountHandler(handler: MountHandler): Component<N> {
+        const boundHandler = handler.bind(this);
+        this.#mountHandlers = tvPush(this.#mountHandlers, boundHandler);
         if (this.#mounted) {
-            handler();
+            boundHandler();
         }
         return this;
     }
 
-    addUnmountHandler(handler: () => void): Component<N> {
-        this.#unmountHandlers = tvPush(this.#unmountHandlers, handler);
+    addUnmountHandler(handler: UnmountHandler): Component<N> {
+        this.#unmountHandlers = tvPush(this.#unmountHandlers, handler.bind(this));
         return this;
     }
 
     addUpdateHandler(handler: UpdateHandler): Component<N> {
-        this.#updateHandlers = tvPush(this.#updateHandlers, handler);
+        this.#updateHandlers = tvPush(this.#updateHandlers, handler.bind(this));
         this.#addUpdateHandlerCount(1);
         return this;
     }
 
-    addValueWatcher<T>(value: Value<T>, watcher: (v: T) => void, equalCheck?: (a: T, b: T) => boolean): Component<N> {
+    addValueWatcher<T>(value: Value<T>, watcher: (this: Component, v: T) => void, equalCheck?: (a: T, b: T) => boolean): Component<N> {
+        const boundWatcher = watcher.bind(this);
         if (isConstValue(value)) {
-            watcher(value);
+            boundWatcher(value);
             return this;
         }
         const eql = equalCheck ?? ((a, b) => a === b);
@@ -112,10 +103,30 @@ class Component<N extends Node | null = Node | null> {
             if (!hasVal || !eql(val, newVal)) {
                 val = newVal;
                 hasVal = true;
-                watcher(newVal);
+                boundWatcher(newVal);
             }
         });
         return this;
+    }
+
+    provideContext<T>(context: Context<T>, value: T): Component<N> {
+        if (!this.#contextValues) {
+            this.#contextValues = new Map();
+        }
+        this.#contextValues.set(context, value);
+        return this;
+    }
+
+    getContext<T>(context: Context<T>): T {
+        for (let c: Component | null = this; c; c = c.#parent) {
+            if (c.#contextValues) {
+                const value = c.#contextValues.get(context);
+                if (value !== undefined) {
+                    return value as T;
+                }
+            }
+        }
+        throw new Error('context not provided: ' + context.name);
     }
 
     setAttributes(attributes: Attributes<N> | null): Component<N> {
@@ -222,6 +233,30 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
+    mount(): void {
+        this.#mount();
+        this.update();
+    }
+
+    update(): void {
+        ++touchedComponents;
+        if (this.#updateHandlerCount === 0) {
+            return;
+        }
+        let skipSubtree = false;
+        tvForEach(this.#updateHandlers, (handler) => {
+            updaterCount += 1;
+            if (handler() === false) {
+                skipSubtree = true;
+            }
+        });
+        if (!skipSubtree) {
+            for (let c = this.#firstChild; c; c = c.#nextSibling) {
+                c.update();
+            }
+        }
+    }
+
     #mount(): void {
         if (this.#mounted) {
             throw new Error('already mounted');
@@ -248,42 +283,12 @@ class Component<N extends Node | null = Node | null> {
         }
     }
 
-    #update(): void {
-        ++touchedComponents;
-        if (this.#updateHandlerCount === 0) {
-            return;
-        }
-        tvForEach(this.#updateHandlers, (handler) => {
-            updaterCount += 1;
-            if (handler() === false) {
-                throw 'cancel';
-            }
-        });
-        for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            c.#update();
-        }
-    }
-
     #attachComponent(component: Component, before: Component | null = null): void {
         if (component === this) {
             throw new Error('cannot attach component to itself');
         }
         if (component.#parent) {
             throw new Error('component is already attached to a component');
-        }
-        
-        if (this.#mounted) {
-            component.mount();
-        }
-        
-        const container = this.#container;
-        if (container) {
-            component.#maybeSetChildContainerNode(container);
-
-            const referenceNode = (before ? before.#getFirstNodeGoingForward() : this.#getLastNodeGoingBackward()?.nextSibling) ?? null;
-            component.#forEachNode((node) => {
-                container.insertBefore(node, referenceNode);
-            });
         }
 
         if (before) {
@@ -310,6 +315,20 @@ class Component<N extends Node | null = Node | null> {
         component.#parent = this;
 
         this.#addUpdateHandlerCount(component.#updateHandlerCount);
+        
+        if (this.#mounted) {
+            component.mount();
+        }
+        
+        const container = this.#container;
+        if (container) {
+            component.#maybeSetChildContainerNode(container);
+
+            const referenceNode = (before ? before.#getFirstNodeGoingForward() : this.#getLastNodeGoingBackward()?.nextSibling) ?? null;
+            component.#forEachNode((node) => {
+                container.insertBefore(node, referenceNode);
+            });
+        }
     }
 
     #detachFromParent(): void {
@@ -438,6 +457,11 @@ class Component<N extends Node | null = Node | null> {
 }
 
 
+function isConstValue<T>(value: Value<T>): value is T {
+    return typeof value !== 'function';
+}
+
+
 function setElementAttribute(elem: Element, name: string, value: Scalar): void {
     if (name in elem) {
         (elem as any)[name] = value;
@@ -492,7 +516,7 @@ function componentTreeSize(component: Component): number {
 
 
 function iterateFragment(fragment: FragmentItem, handler: (component: Component) => void): void {
-    if (fragment === null || typeof fragment === 'undefined') {
+    if (fragment === null || fragment === undefined) {
         // ignore
     } else if (fragment instanceof Component) {
         handler(fragment);
@@ -559,7 +583,7 @@ function With<T extends Scalar>(input: Value<T>, mapper: (v: T) => FragmentItem,
     const fragmentCache: Map<T, Component[]> = new Map();
     root.addValueWatcher(input, (v) => {
         let fragment = fragmentCache.get(v);
-        if (typeof fragment === 'undefined') {
+        if (fragment === undefined) {
             fragment = flattenFragment(mapper(v));
             fragmentCache.set(v, fragment);
         }
@@ -692,6 +716,8 @@ function TodoItemView(item: TodoItemModel) {
     );
 }
 
+const TestContext = new Context<string>('TestContext');
+
 function TodoListView(model: TodoListModel) {
     const input = H('input');
     return H('div', null,
@@ -714,10 +740,15 @@ function TodoListView(model: TodoListModel) {
         Match(() => model.getItems().length % 2,
             [0, 'even'],
             [1, Txt('odd')
-                    .addMountHandler(() => console.log('mounted'))
-                    .addUnmountHandler(() => console.log('unmounted'))]),
+                    .addMountHandler(function () {
+                        console.log('mounted');
+                        console.log('TestContext:', this.getContext(TestContext));
+                    })
+                    .addUnmountHandler(function () {
+                        console.log('unmounted');
+                    })]),
         For(model.getItems, TodoItemView),
-    );
+    ).provideContext(TestContext, 'foobar');
 }
 
 
