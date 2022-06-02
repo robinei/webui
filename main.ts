@@ -1,4 +1,4 @@
-import { ThinVec, tvPush, tvForEach, tvEmpty } from './util';
+import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, listsEqual } from './util';
 
 type Scalar = null | undefined | string | number | boolean;
 
@@ -185,6 +185,13 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
+    appendChildren(children: Component[]): Component<N> {
+        for (const child of children) {
+            this.appendChild(child);
+        }
+        return this;
+    }
+
     insertBefore(child: Component, reference: Component | null): Component<N> {
         this.#attachComponent(child, reference);
         return this;
@@ -192,12 +199,6 @@ class Component<N extends Node | null = Node | null> {
 
     insertAfter(child: Component, reference: Component | null): Component<N> {
         this.insertBefore(child, reference?.nextSibling ?? null);
-        return this;
-    }
-
-    replaceChild(replacement: Component, replaced: Component): Component<N> {
-        this.#attachComponent(replacement, replaced);
-        replaced.#detachFromParent();
         return this;
     }
 
@@ -209,17 +210,33 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    appendChildren(children: Component[]): Component<N> {
-        for (const child of children) {
-            this.appendChild(child);
+    replaceChild(replacement: Component, replaced: Component): Component<N> {
+        if (replacement === replaced) {
+            return this;
         }
+        this.#attachComponent(replacement, replaced);
+        replaced.#detachFromParent();
         return this;
     }
 
     replaceChildren(children: Component[]): Component<N> {
-        this.clear();
-        this.appendChildren(children);
+        const operations = calcLevenshteinOperations(this.getChildren(), children);
+        for (const op of operations) {
+            switch (op.type) {
+            case 'replace': this.replaceChild(op.newValue, op.oldValue); break;
+            case 'insert': this.insertBefore(op.value, op.before); break;
+            case 'remove': this.removeChild(op.value); break;
+            }
+        }
         return this;
+    }
+
+    getChildren(): Component[] {
+        const children: Component[] = [];
+        for (let c = this.#firstChild; c; c = c.#nextSibling) {
+            children.push(c);
+        }
+        return children;
     }
 
     clear(): Component<N> {
@@ -233,16 +250,14 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    mount(): void {
+    mount(): Component<N> {
         this.#mount();
         this.update();
+        return this;
     }
 
-    update(): void {
+    update(): Component<N> {
         ++touchedComponents;
-        if (this.#updateHandlerCount === 0) {
-            return;
-        }
         let skipSubtree = false;
         tvForEach(this.#updateHandlers, (handler) => {
             updaterCount += 1;
@@ -252,9 +267,12 @@ class Component<N extends Node | null = Node | null> {
         });
         if (!skipSubtree) {
             for (let c = this.#firstChild; c; c = c.#nextSibling) {
-                c.update();
+                if (c.#updateHandlerCount > 0) {
+                    c.update();
+                }
             }
         }
+        return this;
     }
 
     #mount(): void {
@@ -300,8 +318,8 @@ class Component<N extends Node | null = Node | null> {
             } else {
                 this.#firstChild = component;
             }
-            before.#prevSibling = component;
             component.#prevSibling = before.#prevSibling;
+            before.#prevSibling = component;
         } else {
             if (this.#lastChild) {
                 this.#lastChild.#nextSibling = component;
@@ -322,9 +340,8 @@ class Component<N extends Node | null = Node | null> {
         
         const container = this.#container;
         if (container) {
+            const referenceNode = (before ? before.#getFirstNodeGoingForward() : component.#getLastNodeGoingBackward(false)?.nextSibling) ?? null;
             component.#maybeSetChildContainerNode(container);
-
-            const referenceNode = (before ? before.#getFirstNodeGoingForward() : this.#getLastNodeGoingBackward()?.nextSibling) ?? null;
             component.#forEachNode((node) => {
                 container.insertBefore(node, referenceNode);
             });
@@ -413,8 +430,8 @@ class Component<N extends Node | null = Node | null> {
         return null;
     }
 
-    #getLastNodeGoingBackward(): Node | null {
-        for (let c: Component | null = this; c; c = c.#prevSibling) {
+    #getLastNodeGoingBackward(includeSelf: boolean = true): Node | null {
+        for (let c: Component | null = includeSelf ? this : this.#prevSibling; c; c = c.#prevSibling) {
             const node = c.#getLastNode();
             if (node) {
                 return node;
@@ -431,8 +448,8 @@ class Component<N extends Node | null = Node | null> {
         return null;
     }
 
-    #getFirstNodeGoingForward(): Node | null {
-        for (let c: Component | null = this; c; c = c.#nextSibling) {
+    #getFirstNodeGoingForward(includeSelf: boolean = true): Node | null {
+        for (let c: Component | null = includeSelf ? this : this.#nextSibling; c; c = c.#nextSibling) {
             const node = c.#getFirstNode();
             if (node) {
                 return node;
@@ -481,11 +498,10 @@ function setElementAttribute(elem: Element, name: string, value: Scalar): void {
 }
 
 
-function printComponentTree(root: Component) {
+function dumpComponentTree(root: Component): string {
     const result: string[] = [];
     recurse(root, 0);
-    const text = result.join('');
-    console.log(text);
+    return result.join('');
     
     function recurse(component: Component, depth: number) {
         let indent = '';
@@ -537,6 +553,17 @@ function flattenFragment(fragment: FragmentItem): Component[] {
 }
 
 
+function fragmentToComponent(fragment: FragmentItem): Component {
+    const components = flattenFragment(fragment);
+    if (components.length === 1) {
+        return components[0]!;
+    }
+    const component = new Component(null);
+    component.appendFragment(components);
+    return component;
+}
+
+
 function fragmentToComponentOrNull(fragment: FragmentItem): Component | null {
     const components = flattenFragment(fragment);
     if (components.length === 0) {
@@ -575,9 +602,9 @@ function Fragment(...items: FragmentItem[]): Component {
 }
 
 
-function With<T extends Scalar>(input: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component | null {
+function With<T extends Scalar>(input: Value<T>, mapper: (v: T) => FragmentItem, name?: string): FragmentItem {
     if (isConstValue(input)) {
-        return fragmentToComponentOrNull(mapper(input));
+        return flattenFragment(mapper(input));
     }
     const root = new Component(null, name ?? 'With');
     const fragmentCache: Map<T, Component[]> = new Map();
@@ -597,14 +624,14 @@ function If(
     predicate: Value<boolean>,
     thenFragment: FragmentItem,
     elseFragment?: FragmentItem
-): Component | null {
+): FragmentItem {
     return With(predicate, (pred) => {
         return pred ? thenFragment : elseFragment;
     }, 'If');
 }
 
 
-function Match<T extends Scalar>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component | null {
+function Match<T extends Scalar>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): FragmentItem {
     return With(value, (v: T) => {
         for (const [matcher, ...fragment] of cases) {
             if (typeof matcher === 'function' ? matcher(v) : v === matcher) {
@@ -619,38 +646,27 @@ function Else<T>(_: T): true {
 }
 
 
-function For<T extends { key: string }>(itemsValue: Value<T[]>, itemFunc: (item: T) => Component): Component {
-    let components: { [key: string]: Component } = {};
+function For<T extends object>(itemsValue: Value<T[]>, itemFunc: (item: T) => FragmentItem): FragmentItem {
+    if (isConstValue(itemsValue)) {
+        return flattenFragment(itemsValue.map(itemFunc));
+    }
+
+    let cache = new WeakMap<T, Component[]>();
     const root = new Component(null, 'For');
 
     root.addValueWatcher(itemsValue, (items) => {
-        root.clear();
-        for (const item of items) {
-            root.appendChild(getComponent(item));
-        }
+        root.replaceChildren(items.map(getItemFragment).flat());
     }, listsEqual);
     
     return root;
 
-    function getComponent(item: T): Component {
-        let component = components[item.key];
-        if (!component) {
-            component = itemFunc(item);
-            components[item.key] = component;
+    function getItemFragment(item: T): Component[] {
+        let fragment = cache.get(item);
+        if (!fragment) {
+            fragment = flattenFragment(itemFunc(item));
+            cache.set(item, fragment);
         }
-        return component;
-    }
-
-    function listsEqual(a: T[], b: T[]): boolean {
-        if (a.length != b.length) {
-            return false;
-        }
-        for (let i = 0; i < a.length; ++i) {
-            if (a[i]!.key !== b[i]!.key) {
-                return false;
-            }
-        }
-        return true;
+        return fragment;
     }
 }
 
@@ -663,24 +679,17 @@ interface TodoItemModel {
     title: string;
     done: boolean;
     index: number;
-    key: string;
 }
 
 class TodoListModel {
     private items: TodoItemModel[] = [];
-    private keyCounter = 0;
 
     addItem(title: string): void {
         this.items = [...this.items, {
             title,
             done: false,
             index: this.items.length,
-            key: (++this.keyCounter).toString()
         }];
-    }
-
-    setItemDone(key: string, done: boolean): void {
-        this.items = this.items.map((item) => (item.key !== key ? item : { ...item, done }));
     }
 
     setAllDone = () => {
@@ -721,6 +730,17 @@ const TestContext = new Context<string>('TestContext');
 function TodoListView(model: TodoListModel) {
     const input = H('input');
     return H('div', null,
+        H('button', {
+            onclick() {
+                console.log(dumpComponentTree(bodyComponent));
+            }
+        }, 'Print tree'),
+        H('button', {
+            onclick() {
+                updateAll();
+            }
+        }, 'Update'),
+        H('br'),
         'Todo:',
         H('br'),
         input,
@@ -789,14 +809,13 @@ function updateAll() {
     updaterCount = 0;
     touchedComponents = 0;
     bodyComponent.update();
-    printComponentTree(bodyComponent);
     console.log('Ran', updaterCount, 'updaters. Touched', touchedComponents, 'of', componentTreeSize(bodyComponent), 'components.');
 }
 
 const todoListModel = new TodoListModel();
 todoListModel.addItem('Bake bread');
 
-const bodyComponent = new Component(document.body);
-bodyComponent.appendChild(TodoListView(todoListModel));
-bodyComponent.appendChild(TestComponent());
-bodyComponent.mount();
+const bodyComponent = new Component(document.body).appendChildren([
+    TodoListView(todoListModel),
+    TestComponent(),
+]).mount();
