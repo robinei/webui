@@ -1,32 +1,53 @@
-import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, listsEqual } from './util';
+import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, listsEqual, WritableKeys } from './util';
 
-type Scalar = null | undefined | string | number | boolean;
+type Primitive = null | undefined | string | number | boolean | symbol;
 
 type Value<T> = T | (() => T);
 
-type FragmentItem = Value<Scalar> | Component | FragmentItem[];
+type FragmentItem = Value<Primitive> | Component | FragmentItem[];
 
 type Styles = {
     [K in keyof CSSStyleDeclaration as CSSStyleDeclaration[K] extends Function ? never : K]?: Value<CSSStyleDeclaration[K]>;
 };
 
-type AttributesImpl<T> = {
-    [K in keyof T as T[K] extends (Function | null | undefined) ? (K extends `on${string}` ? K : never) : K]?:
-        K extends 'style' ? Styles :
-        T[K] extends (Function | null | undefined) ? T[K] : Value<T[K]>;
+type PropertyAttributes<N> = {
+    [K in keyof N as
+        K extends string ? (
+            N[K] extends (Function | null | undefined) ? never :
+            K extends WritableKeys<N> ? (N[K] extends Primitive ? K : never) :
+            K extends 'style' ? K : never
+        ) : never
+    ]?: K extends 'style' ? Styles : Value<N[K]>;
 };
 
-type Attributes<T> = AttributesImpl<T & {
-    onupdate: UpdateHandler;
-    onmount: MountHandler;
-    onunmount: UnmountHandler;
-}>;
+type EventAttributes<N> = {
+    [K in keyof N as
+        K extends string ? (
+            N[K] extends (Function | null | undefined) ?
+                (K extends `on${string}` ? K : never) :
+                never
+        ) : never
+    ]?: RewriteThisParameter<N[K]>;
+};
 
-type MountHandler = (this: Component) => void;
-type UnmountHandler = (this: Component) => void;
-type UpdateHandler = (this: Component) => void | false;
+type ComponentAttributes = {
+    onmount?: MountListener;
+    onunmount?: UnmountListener;
+    onupdate?: UpdateListener;
+};
 
-class Context<T> {
+type Attributes<N> = PropertyAttributes<N> & EventAttributes<N> & ComponentAttributes;
+
+type MountListener = (this: Component) => void;
+type UnmountListener = (this: Component) => void;
+type UpdateListener = (this: Component) => void | false;
+
+type RewriteThisParameter<F> =
+    F extends (this: infer _, ...args: infer Args) => infer Ret ? (this: Component, ...args: Args) => Ret :
+    F extends (...args: infer Args) => infer Ret ? (this: Component, ...args: Args) => Ret : never;
+
+
+class Context<_> {
     #name: string;
     get name(): string { return this.#name; }
     constructor(name: string) { this.#name = name; }
@@ -45,15 +66,15 @@ class Component<N extends Node | null = Node | null> {
     #prevSibling: Component | null = null;
 
     #mounted = false;
-    #mountHandlers: ThinVec<() => void> = tvEmpty;
-    #unmountHandlers: ThinVec<() => void> = tvEmpty;
-    #updateHandlers: ThinVec<() => void | false> = tvEmpty;
-    #updateHandlerCount = 0; // count for subtree
+    #mountListeners: ThinVec<() => void> = tvEmpty;
+    #unmountListeners: ThinVec<() => void> = tvEmpty;
+    #updateListeners: ThinVec<() => void | false> = tvEmpty;
+    #updateListenerCount = 0; // count for subtree
 
     #contextValues: Map<Context<unknown>, unknown> | undefined;
 
     get node(): N { return this.#node; }
-    get name(): string { return this.#name ?? this.#node?.nodeName ?? 'Fragment'; }
+    get name(): string { return this.#name ?? this.#node?.nodeName ?? 'Group'; }
 
     get parent(): Component | null { return this.#parent; }
     get firstChild(): Component | null { return this.#firstChild; }
@@ -61,6 +82,13 @@ class Component<N extends Node | null = Node | null> {
     get nextSibling(): Component | null { return this.#nextSibling; }
     get prevSibling(): Component | null { return this.#prevSibling; }
 
+    get root(): Component {
+        let c: Component = this;
+        while (c.parent) {
+            c = c.parent;
+        }
+        return c;
+    }
 
     constructor(node: N, name?: string) {
         this.#node = node;
@@ -68,27 +96,39 @@ class Component<N extends Node | null = Node | null> {
         this.#container = node;
     }
 
-    addMountHandler(handler: MountHandler): Component<N> {
-        const boundHandler = handler.bind(this);
-        this.#mountHandlers = tvPush(this.#mountHandlers, boundHandler);
+    addMountListener(listener: MountListener): Component<N> {
+        const boundListener = listener.bind(this);
+        this.#mountListeners = tvPush(this.#mountListeners, boundListener);
         if (this.#mounted) {
-            boundHandler();
+            boundListener();
         }
         return this;
     }
 
-    addUnmountHandler(handler: UnmountHandler): Component<N> {
-        this.#unmountHandlers = tvPush(this.#unmountHandlers, handler.bind(this));
+    addUnmountListener(listener: UnmountListener): Component<N> {
+        this.#unmountListeners = tvPush(this.#unmountListeners, listener.bind(this));
         return this;
     }
 
-    addUpdateHandler(handler: UpdateHandler): Component<N> {
-        this.#updateHandlers = tvPush(this.#updateHandlers, handler.bind(this));
-        this.#addUpdateHandlerCount(1);
+    addUpdateListener(listener: UpdateListener): Component<N> {
+        this.#updateListeners = tvPush(this.#updateListeners, listener.bind(this));
+        this.#addUpdateListenerCount(1);
         return this;
     }
 
-    addValueWatcher<T>(value: Value<T>, watcher: (this: Component, v: T) => void, equalCheck?: (a: T, b: T) => boolean): Component<N> {
+    addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: Component<N>, ev: GlobalEventHandlersEventMap[K]) => any): Component<N> {
+        if (!this.#node) {
+            throw new Error('addEventListener called on node-less component');
+        }
+        const boundListener = listener.bind(this);
+        this.#node.addEventListener(type, (ev: any) => {
+            boundListener(ev);
+            this.#updateRoot();
+        });
+        return this;
+    }
+
+    addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck?: (a: T, b: T) => boolean): Component<N> {
         const boundWatcher = watcher.bind(this);
         if (isConstValue(value)) {
             boundWatcher(value);
@@ -98,7 +138,7 @@ class Component<N extends Node | null = Node | null> {
         const func = value as () => T;
         let val: T;
         let hasVal = false;
-        this.addUpdateHandler(() => {
+        this.addUpdateListener(() => {
             const newVal = func();
             if (!hasVal || !eql(val, newVal)) {
                 val = newVal;
@@ -131,24 +171,21 @@ class Component<N extends Node | null = Node | null> {
 
     setAttributes(attributes: Attributes<N> | null): Component<N> {
         for (const name in attributes) {
-            const value = attributes[name]! as unknown as Value<Scalar>;
+            const value = attributes[name]! as unknown as Value<Primitive>;
 
             if (typeof value === 'function' && name.startsWith('on')) {
                 switch (name) {
                 case 'onupdate':
-                    this.addUpdateHandler(value as UpdateHandler);
+                    this.addUpdateListener(value as any);
                     break;
                 case 'onmount':
-                    this.addMountHandler(value);
+                    this.addMountListener(value);
                     break;
                 case 'onunmount':
-                    this.addUnmountHandler(value);
+                    this.addUnmountListener(value);
                     break;
                 default:
-                    this.#node?.addEventListener(name.substring(2), (ev) => {
-                        (value as EventListener)(ev);
-                        updateAll();
-                    });
+                    this.addEventListener(name.substring(2) as any, value as any);
                     break;
                 }
             } else if (name === 'style') {
@@ -158,8 +195,8 @@ class Component<N extends Node | null = Node | null> {
                 const elem = this.#node;
                 const styles = value as Styles;
                 for (const styleName in styles) {
-                    this.addValueWatcher(styles[styleName]!, (scalar) => {
-                        elem.style[styleName] = scalar;
+                    this.addValueWatcher(styles[styleName]!, (primitive) => {
+                        elem.style[styleName] = primitive;
                     });
                 }
             } else {
@@ -167,8 +204,8 @@ class Component<N extends Node | null = Node | null> {
                     throw new Error('attribute requires node to be Element');
                 }
                 const elem = this.#node;
-                this.addValueWatcher(value, (scalar) => {
-                    setElementAttribute(elem, name, scalar);
+                this.addValueWatcher(value, (primitive) => {
+                    setElementAttribute(elem, name, primitive);
                 });
             }
         }
@@ -257,17 +294,20 @@ class Component<N extends Node | null = Node | null> {
     }
 
     update(): Component<N> {
+        if (!this.#mounted) {
+            return this;
+        }
         ++touchedComponents;
         let skipSubtree = false;
-        tvForEach(this.#updateHandlers, (handler) => {
+        tvForEach(this.#updateListeners, (listener) => {
             updaterCount += 1;
-            if (handler() === false) {
+            if (listener() === false) {
                 skipSubtree = true;
             }
         });
         if (!skipSubtree) {
             for (let c = this.#firstChild; c; c = c.#nextSibling) {
-                if (c.#updateHandlerCount > 0) {
+                if (c.#updateListenerCount > 0) {
                     c.update();
                 }
             }
@@ -280,8 +320,8 @@ class Component<N extends Node | null = Node | null> {
             throw new Error('already mounted');
         }
         this.#mounted = true;
-        tvForEach(this.#mountHandlers, (handler) => {
-            handler();
+        tvForEach(this.#mountListeners, (listener) => {
+            listener();
         });
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
             c.#mount();
@@ -293,8 +333,8 @@ class Component<N extends Node | null = Node | null> {
             throw new Error('not mounted');
         }
         this.#mounted = false;
-        tvForEach(this.#unmountHandlers, (handler) => {
-            handler();
+        tvForEach(this.#unmountListeners, (listener) => {
+            listener();
         });
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
             c.#unmount();
@@ -332,7 +372,7 @@ class Component<N extends Node | null = Node | null> {
         component.#nextSibling = before;
         component.#parent = this;
 
-        this.#addUpdateHandlerCount(component.#updateHandlerCount);
+        this.#addUpdateListenerCount(component.#updateListenerCount);
         
         if (this.#mounted) {
             component.mount();
@@ -380,7 +420,7 @@ class Component<N extends Node | null = Node | null> {
         this.#parent = null;
 
         this.#maybeSetChildContainerNode(null);
-        parent.#addUpdateHandlerCount(-this.#updateHandlerCount);
+        parent.#addUpdateListenerCount(-this.#updateListenerCount);
     }
 
     #maybeSetChildContainerNode(node: Node | null): void {
@@ -466,12 +506,23 @@ class Component<N extends Node | null = Node | null> {
         return null;
     }
 
-    #addUpdateHandlerCount(diff: number): void {
+    #addUpdateListenerCount(diff: number): void {
         for (let c: Component | null = this; c; c = c.#parent) {
-            c.#updateHandlerCount += diff;
+            c.#updateListenerCount += diff;
         }
     }
+    
+    #updateRoot() {
+        updaterCount = 0;
+        touchedComponents = 0;
+        const root = this.root;
+        root.update();
+        console.log('Ran', updaterCount, 'updaters. Touched', touchedComponents, 'of', componentTreeSize(root), 'components.');
+    }
 }
+
+let updaterCount = 0;
+let touchedComponents = 0;
 
 
 function isConstValue<T>(value: Value<T>): value is T {
@@ -479,7 +530,7 @@ function isConstValue<T>(value: Value<T>): value is T {
 }
 
 
-function setElementAttribute(elem: Element, name: string, value: Scalar): void {
+function setElementAttribute(elem: Element, name: string, value: Primitive): void {
     if (name in elem) {
         (elem as any)[name] = value;
     } else if (typeof value === 'boolean') {
@@ -553,31 +604,6 @@ function flattenFragment(fragment: FragmentItem): Component[] {
 }
 
 
-function fragmentToComponent(fragment: FragmentItem): Component {
-    const components = flattenFragment(fragment);
-    if (components.length === 1) {
-        return components[0]!;
-    }
-    const component = new Component(null);
-    component.appendFragment(components);
-    return component;
-}
-
-
-function fragmentToComponentOrNull(fragment: FragmentItem): Component | null {
-    const components = flattenFragment(fragment);
-    if (components.length === 0) {
-        return null;
-    }
-    if (components.length === 1) {
-        return components[0]!;
-    }
-    const component = new Component(null);
-    component.appendFragment(components);
-    return component;
-}
-
-
 function H<K extends keyof HTMLElementTagNameMap>(
     tag: K,
     attributes: Attributes<HTMLElementTagNameMap[K]> | null = null,
@@ -589,20 +615,20 @@ function H<K extends keyof HTMLElementTagNameMap>(
 }
 
 
-function Txt(value: Value<Scalar>): Component<Text> {
+function Txt(value: Value<Primitive>): Component<Text> {
     const node = document.createTextNode('');
-    return new Component(node).addValueWatcher(value, (scalar) => {
-        node.nodeValue = scalar?.toString() ?? '';
+    return new Component(node).addValueWatcher(value, (primitive) => {
+        node.nodeValue = primitive?.toString() ?? '';
     });
 }
 
 
-function Fragment(...items: FragmentItem[]): Component {
+function Group(...items: FragmentItem[]): Component {
     return new Component(null).appendFragment(items);
 }
 
 
-function With<T extends Scalar>(input: Value<T>, mapper: (v: T) => FragmentItem, name?: string): FragmentItem {
+function With<T extends Primitive>(input: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component | Component[] {
     if (isConstValue(input)) {
         return flattenFragment(mapper(input));
     }
@@ -620,18 +646,12 @@ function With<T extends Scalar>(input: Value<T>, mapper: (v: T) => FragmentItem,
 }
 
 
-function If(
-    predicate: Value<boolean>,
-    thenFragment: FragmentItem,
-    elseFragment?: FragmentItem
-): FragmentItem {
-    return With(predicate, (pred) => {
-        return pred ? thenFragment : elseFragment;
-    }, 'If');
+function If(predicate: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component | Component[] {
+    return With(predicate, (pred) => pred ? thenFragment : elseFragment, 'If');
 }
 
 
-function Match<T extends Scalar>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): FragmentItem {
+function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component | Component[] {
     return With(value, (v: T) => {
         for (const [matcher, ...fragment] of cases) {
             if (typeof matcher === 'function' ? matcher(v) : v === matcher) {
@@ -646,26 +666,29 @@ function Else<T>(_: T): true {
 }
 
 
-function For<T extends object>(itemsValue: Value<T[]>, itemFunc: (item: T) => FragmentItem): FragmentItem {
+function For<T>(itemsValue: Value<T[]>, itemFunc: (item: T) => FragmentItem): Component | Component[] {
     if (isConstValue(itemsValue)) {
         return flattenFragment(itemsValue.map(itemFunc));
     }
 
-    let cache = new WeakMap<T, Component[]>();
+    let map = new Map<T, Component[]>();
+    let newMap: Map<T, Component[]>;
     const root = new Component(null, 'For');
 
     root.addValueWatcher(itemsValue, (items) => {
+        newMap = new Map();
         root.replaceChildren(items.map(getItemFragment).flat());
+        map = newMap;
     }, listsEqual);
     
     return root;
 
     function getItemFragment(item: T): Component[] {
-        let fragment = cache.get(item);
+        let fragment = map.get(item);
         if (!fragment) {
             fragment = flattenFragment(itemFunc(item));
-            cache.set(item, fragment);
         }
+        newMap.set(item, fragment);
         return fragment;
     }
 }
@@ -684,20 +707,27 @@ interface TodoItemModel {
 class TodoListModel {
     private items: TodoItemModel[] = [];
 
-    addItem(title: string): void {
+    addItem(title: string) {
         this.items = [...this.items, {
             title,
             done: false,
             index: this.items.length,
         }];
+        return this;
     }
 
     setAllDone = () => {
-        this.items = this.items.map((item) => ({ ...item, done: true }));
+        for (const item of this.items) {
+            item.done = true;
+        }
+        return this;
     };
 
     setNoneDone = () => {
-        this.items = this.items.map((item) => ({ ...item, done: true }));
+        for (const item of this.items) {
+            item.done = false;
+        }
+        return this;
     };
 
     getItems = () => {
@@ -716,7 +746,7 @@ function TodoItemView(item: TodoItemModel) {
         H('input', {
             type: 'checkbox',
             checked: () => item.done,
-            onchange(ev) {
+            onchange(ev: Event) {
                 item.done = (ev.target as any).checked;
             }
         }),
@@ -732,13 +762,11 @@ function TodoListView(model: TodoListModel) {
     return H('div', null,
         H('button', {
             onclick() {
-                console.log(dumpComponentTree(bodyComponent));
+                console.log(dumpComponentTree(this.root));
             }
         }, 'Print tree'),
         H('button', {
-            onclick() {
-                updateAll();
-            }
+            onclick() {}
         }, 'Update'),
         H('br'),
         'Todo:',
@@ -760,11 +788,11 @@ function TodoListView(model: TodoListModel) {
         Match(() => model.getItems().length % 2,
             [0, 'even'],
             [1, Txt('odd')
-                    .addMountHandler(function () {
+                    .addMountListener(function () {
                         console.log('mounted');
                         console.log('TestContext:', this.getContext(TestContext));
                     })
-                    .addUnmountHandler(function () {
+                    .addUnmountListener(function () {
                         console.log('unmounted');
                     })]),
         For(model.getItems, TodoItemView),
@@ -780,7 +808,7 @@ function TestComponent() {
     const [cb3, checked3] = CheckBox();
     const [cb4, checked4] = CheckBox();
 
-    return Fragment(
+    return Group(
         cb1, H('br'),
         cb2, H('br'),
         cb3, H('br'),
@@ -803,19 +831,7 @@ function TestComponent() {
 
 
 
-let updaterCount = 0;
-let touchedComponents = 0;
-function updateAll() {
-    updaterCount = 0;
-    touchedComponents = 0;
-    bodyComponent.update();
-    console.log('Ran', updaterCount, 'updaters. Touched', touchedComponents, 'of', componentTreeSize(bodyComponent), 'components.');
-}
-
-const todoListModel = new TodoListModel();
-todoListModel.addItem('Bake bread');
-
-const bodyComponent = new Component(document.body).appendChildren([
-    TodoListView(todoListModel),
+new Component(document.body).appendChildren([
+    TodoListView(new TodoListModel().addItem('Bake bread')),
     TestComponent(),
 ]).mount();

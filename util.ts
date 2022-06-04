@@ -1,4 +1,16 @@
 
+type IfEquals<X, Y, A, B> =
+    (<T>() => T extends X ? 1 : 2) extends (<T>() => T extends Y ? 1 : 2) ? A : B;
+
+export type WritableKeys<T> = {
+    [P in keyof T]: IfEquals<{ [Q in P]: T[P] }, { -readonly [Q in P]: T[P] }, P, never>
+}[keyof T];
+
+export type WritablePart<T> = Pick<T, WritableKeys<T>>;
+
+
+
+
 export function lazy<T>(func: () => T): () => T {
     let hasValue = false;
     let value: T;
@@ -13,11 +25,11 @@ export function lazy<T>(func: () => T): () => T {
 
 
 export function listsEqual(a: unknown[], b: unknown[]): boolean {
-    if (a.length != b.length) {
+    if (a.length !== b.length) {
         return false;
     }
     for (let i = 0; i < a.length; ++i) {
-        if (a[i]! !== b[i]!) {
+        if (a[i] !== b[i]) {
             return false;
         }
     }
@@ -77,7 +89,7 @@ export function tvRemove<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
     }
     switch (vec.length) {
     case 1: return tvEmpty;
-    case 2: return i == 0 ? vec[1]! : vec[0]!;
+    case 2: return i === 0 ? vec[1]! : vec[0]!;
     }
     vec.splice(i, 1);
     return vec;
