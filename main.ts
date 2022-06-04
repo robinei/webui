@@ -1,4 +1,4 @@
-import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, listsEqual, WritableKeys } from './util';
+import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, listsEqual, toError, WritableKeys } from './util';
 
 type Primitive = null | undefined | string | number | boolean | symbol;
 
@@ -54,6 +54,9 @@ class Context<_> {
 }
 
 
+type ErrorHandler = (this: Component, error: Error) => void;
+
+
 class Component<N extends Node | null = Node | null> {
     readonly #node: N;
     readonly #name: string | undefined;
@@ -73,8 +76,10 @@ class Component<N extends Node | null = Node | null> {
 
     #contextValues: Map<Context<unknown>, unknown> | undefined;
 
+    #errorHandler: ((error: Error) => void) | undefined;
+
     get node(): N { return this.#node; }
-    get name(): string { return this.#name ?? this.#node?.nodeName ?? 'Group'; }
+    get name(): string { return this.#name ?? this.#node?.nodeName ?? 'anonymous'; }
 
     get parent(): Component | null { return this.#parent; }
     get firstChild(): Component | null { return this.#firstChild; }
@@ -84,9 +89,7 @@ class Component<N extends Node | null = Node | null> {
 
     get root(): Component {
         let c: Component = this;
-        while (c.parent) {
-            c = c.parent;
-        }
+        while (c.parent) { c = c.parent; }
         return c;
     }
 
@@ -96,22 +99,48 @@ class Component<N extends Node | null = Node | null> {
         this.#container = node;
     }
 
+    setErrorHandler(handler: ErrorHandler): Component<N> {
+        this.#errorHandler = handler.bind(this);
+        return this;
+    }
+
     addMountListener(listener: MountListener): Component<N> {
         const boundListener = listener.bind(this);
-        this.#mountListeners = tvPush(this.#mountListeners, boundListener);
+        const wrappedListener = () => {
+            try {
+                boundListener();
+            } catch (e) {
+                this.#propagateError(e);
+            }
+        };
+        this.#mountListeners = tvPush(this.#mountListeners, wrappedListener);
         if (this.#mounted) {
-            boundListener();
+            wrappedListener();
         }
         return this;
     }
 
     addUnmountListener(listener: UnmountListener): Component<N> {
-        this.#unmountListeners = tvPush(this.#unmountListeners, listener.bind(this));
+        const boundListener = listener.bind(this);
+        this.#unmountListeners = tvPush(this.#unmountListeners, () => {
+            try {
+                boundListener();
+            } catch (e) {
+                this.#propagateError(e);
+            }
+        });
         return this;
     }
 
     addUpdateListener(listener: UpdateListener): Component<N> {
-        this.#updateListeners = tvPush(this.#updateListeners, listener.bind(this));
+        const boundListener = listener.bind(this);
+        this.#updateListeners = tvPush(this.#updateListeners, () => {
+            try {
+                boundListener();
+            } catch (e) {
+                this.#propagateError(e);
+            }
+        });
         this.#addUpdateListenerCount(1);
         return this;
     }
@@ -122,7 +151,12 @@ class Component<N extends Node | null = Node | null> {
         }
         const boundListener = listener.bind(this);
         this.#node.addEventListener(type, (ev: any) => {
-            boundListener(ev);
+            try {
+                boundListener(ev);
+            } catch (e) {
+                this.#propagateError(e);
+                return;
+            }
             this.#updateRoot();
         });
         return this;
@@ -130,8 +164,15 @@ class Component<N extends Node | null = Node | null> {
 
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck?: (a: T, b: T) => boolean): Component<N> {
         const boundWatcher = watcher.bind(this);
+        const wrappedWatcher = (v: T) => {
+            try {
+                boundWatcher(v);
+            } catch (e) {
+                this.#propagateError(e);
+            }
+        };
         if (isConstValue(value)) {
-            boundWatcher(value);
+            wrappedWatcher(value);
             return this;
         }
         const eql = equalCheck ?? ((a, b) => a === b);
@@ -143,7 +184,7 @@ class Component<N extends Node | null = Node | null> {
             if (!hasVal || !eql(val, newVal)) {
                 val = newVal;
                 hasVal = true;
-                boundWatcher(newVal);
+                wrappedWatcher(newVal);
             }
         });
         return this;
@@ -511,8 +552,22 @@ class Component<N extends Node | null = Node | null> {
             c.#updateListenerCount += diff;
         }
     }
+
+    #propagateError(error: unknown): void {
+        for (let c: Component | null = this; c; c = c.#parent) {
+            if (c.#errorHandler) {
+                const root = c.root;
+                c.#errorHandler(toError(error));
+                root.#updateRoot();
+                return;
+            }
+        }
+    }
     
-    #updateRoot() {
+    #updateRoot(): void {
+        if (!this.#mounted) {
+            return;
+        }
         updaterCount = 0;
         touchedComponents = 0;
         const root = this.root;
@@ -555,11 +610,9 @@ function dumpComponentTree(root: Component): string {
     return result.join('');
     
     function recurse(component: Component, depth: number) {
-        let indent = '';
         for (let i = 0; i < depth; ++i) {
-            indent += '  ';
+            result.push('  ');
         }
-        result.push(indent);
         result.push(component.name);
         if (component.node instanceof Text) {
             result.push(': ');
@@ -623,24 +676,13 @@ function Txt(value: Value<Primitive>): Component<Text> {
 }
 
 
-function Group(...items: FragmentItem[]): Component {
-    return new Component(null).appendFragment(items);
-}
-
-
-function With<T extends Primitive>(input: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component | Component[] {
+function With<T>(input: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component | Component[] {
     if (isConstValue(input)) {
         return flattenFragment(mapper(input));
     }
     const root = new Component(null, name ?? 'With');
-    const fragmentCache: Map<T, Component[]> = new Map();
     root.addValueWatcher(input, (v) => {
-        let fragment = fragmentCache.get(v);
-        if (fragment === undefined) {
-            fragment = flattenFragment(mapper(v));
-            fragmentCache.set(v, fragment);
-        }
-        root.replaceChildren(fragment);
+        root.replaceChildren(flattenFragment(mapper(v)));
     });
     return root;
 }
@@ -648,6 +690,12 @@ function With<T extends Primitive>(input: Value<T>, mapper: (v: T) => FragmentIt
 
 function If(predicate: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component | Component[] {
     return With(predicate, (pred) => pred ? thenFragment : elseFragment, 'If');
+}
+function When(predicate: Value<boolean>, ...bodyFragment: FragmentItem[]): Component | Component[] {
+    return With(predicate, (pred) => pred ? bodyFragment : null, 'When');
+}
+function Unless(predicate: Value<boolean>, ...bodyFragment: FragmentItem[]): Component | Component[] {
+    return With(predicate, (pred) => pred ? null : bodyFragment, 'Unless');
 }
 
 
@@ -684,12 +732,36 @@ function For<T>(itemsValue: Value<T[]>, itemFunc: (item: T) => FragmentItem): Co
     return root;
 
     function getItemFragment(item: T): Component[] {
-        let fragment = map.get(item);
-        if (!fragment) {
-            fragment = flattenFragment(itemFunc(item));
-        }
+        const fragment = map.get(item) ?? flattenFragment(itemFunc(item));
         newMap.set(item, fragment);
         return fragment;
+    }
+}
+
+
+function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentItem, body: () => FragmentItem): Component {
+    const component = new Component(null, 'ErrorBoundary').setErrorHandler(onError);
+    initContent();
+    return component;
+
+    function onError(error: Error): void {
+        console.error(`Error caught by ErrorBoundary: ${error.stack ?? error.message}`);
+        try {
+            component.replaceChildren(flattenFragment(fallback(error, initContent)));
+        } catch (e) {
+            const err = toError(e);
+            const msg = `ErrorBoundary fallback component failed: ${err.stack ?? err.message}`;
+            console.error(msg);
+            component.replaceChildren([Txt(msg)]);
+        }
+    }
+
+    function initContent(): void {
+        try {
+            component.replaceChildren(flattenFragment(body()));
+        } catch (e) {
+            onError(toError(e));
+        }
     }
 }
 
@@ -803,30 +875,41 @@ function TodoListView(model: TodoListModel) {
 
 
 function TestComponent() {
-    const [cb1, checked1] = CheckBox();
-    const [cb2, checked2] = CheckBox();
-    const [cb3, checked3] = CheckBox();
-    const [cb4, checked4] = CheckBox();
+    return ErrorBoundary(ErrorFallback, () => {
+        const [cb1, checked1] = CheckBox();
+        const [cb2, checked2] = CheckBox();
+        const [cb3, checked3] = CheckBox();
+        const [cb4, checked4] = CheckBox();
 
-    return Group(
-        cb1, H('br'),
-        cb2, H('br'),
-        cb3, H('br'),
-        cb4, H('br'),
-        If(checked1,
-            H('span', null, 'a')),
-        If(checked2,
-            If(checked3,
-                H('span', null, 'b'),
-                H('span', null, 'c'))),
-        If(checked4,
-            H('span', null, 'd')),
-    );
+        return [
+            cb1, H('br'),
+            cb2, H('br'),
+            cb3, H('br'),
+            cb4, H('br'),
+            If(checked1,
+                H('span', null, 'a')),
+            If(checked2,
+                If(checked3,
+                    H('span', null, 'b'),
+                    H('span', null, 'c'))),
+            If(checked4,
+                H('span', null, 'd')),
+            H('br'),
+            H('button', { onclick() { throw new Error('test error'); } }, 'Fail')
+        ];
 
-    function CheckBox() {
-        const cb = H('input', { type: 'checkbox', onchange: () => {} });
-        return [cb, () => cb.node.checked] as const;
-    }
+        function CheckBox() {
+            const cb = H('input', { type: 'checkbox', onchange: () => {} });
+            return [cb, () => cb.node.checked] as const;
+        }
+    });
+}
+
+function ErrorFallback(error: Error, reset: () => void): FragmentItem {
+    return [
+        H('pre', null, error.stack ?? error.message),
+        H('button', { onclick: reset }, 'Reset')
+    ];
 }
 
 

@@ -10,6 +10,10 @@ export type WritablePart<T> = Pick<T, WritableKeys<T>>;
 
 
 
+export function toError(e: unknown): Error {
+    return e instanceof Error ? e : new Error(`thrown value: ${e}`);
+}
+
 
 export function lazy<T>(func: () => T): () => T {
     let hasValue = false;
