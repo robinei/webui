@@ -14,6 +14,10 @@ export function toError(e: unknown): Error {
     return e instanceof Error ? e : new Error(`thrown value: ${e}`);
 }
 
+export function errorDescription(e: unknown): string {
+    return e instanceof Error ? e.stack ?? e.message : `thrown value: ${e}`;
+}
+
 
 export function lazy<T>(func: () => T): () => T {
     let hasValue = false;
@@ -25,6 +29,12 @@ export function lazy<T>(func: () => T): () => T {
         }
         return value;
     };
+}
+
+export function delay(timeoutMillis: number): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, timeoutMillis);
+    });
 }
 
 

@@ -1,8 +1,8 @@
-import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, listsEqual, toError, WritableKeys } from './util';
+import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, listsEqual, toError, WritableKeys, errorDescription, delay } from './util';
 
 type Primitive = null | undefined | string | number | boolean | symbol;
 
-type Value<T> = T | (() => T);
+type Value<T> = T | Promise<T> | (() => T | Promise<T>);
 
 type FragmentItem = Value<Primitive> | Component | FragmentItem[];
 
@@ -54,7 +54,9 @@ class Context<_> {
 }
 
 
-type ErrorHandler = (this: Component, error: Error) => void;
+type ErrorHandler = (this: Component, error: unknown) => boolean;
+
+export const NULL: unique symbol = Symbol();
 
 
 class Component<N extends Node | null = Node | null> {
@@ -76,7 +78,7 @@ class Component<N extends Node | null = Node | null> {
 
     #contextValues: Map<Context<unknown>, unknown> | undefined;
 
-    #errorHandler: ((error: Error) => void) | undefined;
+    #errorHandler: ((error: unknown) => boolean) | undefined;
 
     get node(): N { return this.#node; }
     get name(): string { return this.#name ?? this.#node?.nodeName ?? 'anonymous'; }
@@ -110,7 +112,7 @@ class Component<N extends Node | null = Node | null> {
             try {
                 boundListener();
             } catch (e) {
-                this.#propagateError(e);
+                this.injectError(e);
             }
         };
         this.#mountListeners = tvPush(this.#mountListeners, wrappedListener);
@@ -126,7 +128,7 @@ class Component<N extends Node | null = Node | null> {
             try {
                 boundListener();
             } catch (e) {
-                this.#propagateError(e);
+                this.injectError(e);
             }
         });
         return this;
@@ -138,7 +140,7 @@ class Component<N extends Node | null = Node | null> {
             try {
                 boundListener();
             } catch (e) {
-                this.#propagateError(e);
+                this.injectError(e);
             }
         });
         this.#addUpdateListenerCount(1);
@@ -154,7 +156,7 @@ class Component<N extends Node | null = Node | null> {
             try {
                 boundListener(ev);
             } catch (e) {
-                this.#propagateError(e);
+                this.injectError(e);
                 return;
             }
             this.#updateRoot();
@@ -164,29 +166,61 @@ class Component<N extends Node | null = Node | null> {
 
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck?: (a: T, b: T) => boolean): Component<N> {
         const boundWatcher = watcher.bind(this);
+        const eql = equalCheck ?? ((a, b) => a === b);
+        let lastEmittedValue: T;
+        let hasEmittedValue = false;
         const wrappedWatcher = (v: T) => {
             try {
-                boundWatcher(v);
+                if (!hasEmittedValue || !eql(lastEmittedValue, v)) {
+                    lastEmittedValue = v;
+                    hasEmittedValue = true;
+                    boundWatcher(v);
+                }
             } catch (e) {
-                this.#propagateError(e);
+                this.injectError(e);
             }
         };
+
         if (isConstValue(value)) {
             wrappedWatcher(value);
             return this;
         }
-        const eql = equalCheck ?? ((a, b) => a === b);
-        const func = value as () => T;
-        let val: T;
-        let hasVal = false;
+        
+        if (value instanceof Promise) {
+            value.then((v) => {
+                wrappedWatcher(v);
+            }, (e) => {
+                this.injectError(e);
+            });
+            return this;
+        }
+
+        let lastVal: unknown = NULL;
         this.addUpdateListener(() => {
-            const newVal = func();
-            if (!hasVal || !eql(val, newVal)) {
-                val = newVal;
-                hasVal = true;
-                wrappedWatcher(newVal);
+            const newVal = value();
+            if (newVal === lastVal) {
+                return;
             }
+            lastVal = newVal;
+            if (!(newVal instanceof Promise)) {
+                wrappedWatcher(newVal);
+                return;
+            }
+            newVal.then((v) => {
+                if (!this.#mounted) {
+                    lastVal = NULL; // so that on remount we'll consider the value again
+                } else if (newVal === lastVal) {
+                    wrappedWatcher(v);
+                }
+            }, (e) => {
+                if (!this.#mounted) {
+                    lastVal = NULL; // so that on remount we'll consider the value again
+                } else if (newVal === lastVal) {
+                    this.injectError(e);
+                }
+            });
         });
+
         return this;
     }
 
@@ -354,6 +388,26 @@ class Component<N extends Node | null = Node | null> {
             }
         }
         return this;
+    }
+
+    injectError(error: unknown): void {
+        const root = this.root;
+        let handled = false;
+        for (let c: Component | null = this; c; c = c.#parent) {
+            try {
+                if (c.#errorHandler?.(error) === true) {
+                    handled = true;
+                    break;
+                }
+            } catch (e) {
+                console.error(`failed to handle error: ${errorDescription(error)}`);
+                error = e;
+            }
+        }
+        if (!handled) {
+            console.error(`unhandled error: ${errorDescription(error)}`);
+        }
+        root.#updateRoot();
     }
 
     #mount(): void {
@@ -552,17 +606,6 @@ class Component<N extends Node | null = Node | null> {
             c.#updateListenerCount += diff;
         }
     }
-
-    #propagateError(error: unknown): void {
-        for (let c: Component | null = this; c; c = c.#parent) {
-            if (c.#errorHandler) {
-                const root = c.root;
-                c.#errorHandler(toError(error));
-                root.#updateRoot();
-                return;
-            }
-        }
-    }
     
     #updateRoot(): void {
         if (!this.#mounted) {
@@ -581,7 +624,7 @@ let touchedComponents = 0;
 
 
 function isConstValue<T>(value: Value<T>): value is T {
-    return typeof value !== 'function';
+    return typeof value !== 'function' && !(value instanceof Promise);
 }
 
 
@@ -744,23 +787,17 @@ function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentIt
     initContent();
     return component;
 
-    function onError(error: Error): void {
-        console.error(`Error caught by ErrorBoundary: ${error.stack ?? error.message}`);
-        try {
-            component.replaceChildren(flattenFragment(fallback(error, initContent)));
-        } catch (e) {
-            const err = toError(e);
-            const msg = `ErrorBoundary fallback component failed: ${err.stack ?? err.message}`;
-            console.error(msg);
-            component.replaceChildren([Txt(msg)]);
-        }
+    function onError(error: unknown): boolean {
+        component.replaceChildren(flattenFragment(fallback(toError(error), initContent)));
+        console.error(`Error caught by ErrorBoundary: ${errorDescription(error)}`);
+        return true;
     }
 
     function initContent(): void {
         try {
             component.replaceChildren(flattenFragment(body()));
         } catch (e) {
-            onError(toError(e));
+            component.injectError(e);
         }
     }
 }
@@ -881,7 +918,12 @@ function TestComponent() {
         const [cb3, checked3] = CheckBox();
         const [cb4, checked4] = CheckBox();
 
-        return [
+        const asyncValue = delay(1000).then(() => {
+            throw new Error('async error');
+        });
+        const asyncTrue = delay(2000).then(() => true);
+
+        return When(() => asyncTrue,
             cb1, H('br'),
             cb2, H('br'),
             cb3, H('br'),
@@ -895,8 +937,9 @@ function TestComponent() {
             If(checked4,
                 H('span', null, 'd')),
             H('br'),
-            H('button', { onclick() { throw new Error('test error'); } }, 'Fail')
-        ];
+            H('button', { onclick() { throw new Error('test error'); } }, 'Fail'),
+            //Suspense(() => "Loading...", () => asyncValue),
+        );
 
         function CheckBox() {
             const cb = H('input', { type: 'checkbox', onchange: () => {} });
@@ -907,7 +950,7 @@ function TestComponent() {
 
 function ErrorFallback(error: Error, reset: () => void): FragmentItem {
     return [
-        H('pre', null, error.stack ?? error.message),
+        H('pre', null, errorDescription(error)),
         H('button', { onclick: reset }, 'Reset')
     ];
 }
