@@ -31,7 +31,7 @@ export function lazy<T>(func: () => T): () => T {
     };
 }
 
-export function delay(timeoutMillis: number): Promise<void> {
+export function asyncDelay(timeoutMillis: number): Promise<void> {
     return new Promise((resolve) => {
         setTimeout(resolve, timeoutMillis);
     });

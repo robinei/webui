@@ -1,4 +1,4 @@
-import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, listsEqual, toError, WritableKeys, errorDescription, delay } from './util';
+import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, toError, WritableKeys, errorDescription, asyncDelay } from './util';
 
 type Primitive = null | undefined | string | number | boolean | symbol;
 
@@ -164,14 +164,13 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck?: (a: T, b: T) => boolean): Component<N> {
+    addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck: boolean = true): Component<N> {
         const boundWatcher = watcher.bind(this);
-        const eql = equalCheck ?? ((a, b) => a === b);
         let lastEmittedValue: T;
         let hasEmittedValue = false;
         const wrappedWatcher = (v: T) => {
             try {
-                if (!hasEmittedValue || !eql(lastEmittedValue, v)) {
+                if (!equalCheck || !hasEmittedValue || lastEmittedValue !== v) {
                     lastEmittedValue = v;
                     hasEmittedValue = true;
                     boundWatcher(v);
@@ -198,24 +197,24 @@ class Component<N extends Node | null = Node | null> {
         let lastVal: unknown = NULL;
         this.addUpdateListener(() => {
             const newVal = value();
-            if (newVal === lastVal) {
-                return;
+            if (equalCheck && newVal === lastVal) {
+                return; // early check and return (do less in common case of no change)
             }
-            lastVal = newVal;
             if (!(newVal instanceof Promise)) {
+                lastVal = newVal;
                 wrappedWatcher(newVal);
                 return;
             }
+            if (newVal === lastVal) {
+                return; // don't listen to same Promise (even if equalCheck is false)
+            }
+            lastVal = newVal;
             newVal.then((v) => {
-                if (!this.#mounted) {
-                    lastVal = NULL; // so that on remount we'll consider the value again
-                } else if (newVal === lastVal) {
+                if (newVal === lastVal) {
                     wrappedWatcher(v);
                 }
             }, (e) => {
-                if (!this.#mounted) {
-                    lastVal = NULL; // so that on remount we'll consider the value again
-                } else if (newVal === lastVal) {
+                if (newVal === lastVal) {
                     this.injectError(e);
                 }
             });
@@ -723,11 +722,11 @@ function With<T>(input: Value<T>, mapper: (v: T) => FragmentItem, name?: string)
     if (isConstValue(input)) {
         return flattenFragment(mapper(input));
     }
-    const root = new Component(null, name ?? 'With');
-    root.addValueWatcher(input, (v) => {
-        root.replaceChildren(flattenFragment(mapper(v)));
+    const component = new Component(null, name ?? 'With');
+    component.addValueWatcher(input, (v) => {
+        component.replaceChildren(flattenFragment(mapper(v)));
     });
-    return root;
+    return component;
 }
 
 
@@ -763,21 +762,42 @@ function For<T>(itemsValue: Value<T[]>, itemFunc: (item: T) => FragmentItem): Co
     }
 
     let map = new Map<T, Component[]>();
-    let newMap: Map<T, Component[]>;
-    const root = new Component(null, 'For');
+    const component = new Component(null, 'For');
 
-    root.addValueWatcher(itemsValue, (items) => {
-        newMap = new Map();
-        root.replaceChildren(items.map(getItemFragment).flat());
+    component.addValueWatcher(itemsValue, (items) => {
+        if (areChildrenEqual(items)) {
+            return;
+        }
+        const newMap = new Map();
+        const children: Component[] = [];
+        for (const item of items) {
+            const fragment = map.get(item) ?? flattenFragment(itemFunc(item));
+            newMap.set(item, fragment);
+            for (const child of fragment) {
+                children.push(child);
+            }
+        }
+        component.replaceChildren(children);
         map = newMap;
-    }, listsEqual);
+    }, false);
     
-    return root;
+    return component;
 
-    function getItemFragment(item: T): Component[] {
-        const fragment = map.get(item) ?? flattenFragment(itemFunc(item));
-        newMap.set(item, fragment);
-        return fragment;
+    function areChildrenEqual(items: T[]): boolean {
+        let c = component.firstChild;
+        for (const item of items) {
+            let fragment = map.get(item);
+            if (!fragment) {
+                return false;
+            }
+            for (const child of fragment) {
+                if (child !== c) {
+                    return false;
+                }
+                c = c.nextSibling;
+            }
+        }
+        return c === null;
     }
 }
 
@@ -788,14 +808,18 @@ function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentIt
     return component;
 
     function onError(error: unknown): boolean {
-        component.replaceChildren(flattenFragment(fallback(toError(error), initContent)));
+        const fragment = flattenFragment(fallback(toError(error), initContent));
+        component.clear();
+        component.appendChildren(fragment);
         console.error(`Error caught by ErrorBoundary: ${errorDescription(error)}`);
         return true;
     }
 
     function initContent(): void {
         try {
-            component.replaceChildren(flattenFragment(body()));
+            const fragment = flattenFragment(body());
+            component.clear();
+            component.appendChildren(fragment);
         } catch (e) {
             component.injectError(e);
         }
@@ -814,14 +838,14 @@ interface TodoItemModel {
 }
 
 class TodoListModel {
-    private items: TodoItemModel[] = [];
+    private readonly items: TodoItemModel[] = [];
 
     addItem(title: string) {
-        this.items = [...this.items, {
+        this.items.push({
             title,
             done: false,
             index: this.items.length,
-        }];
+        });
         return this;
     }
 
@@ -918,10 +942,10 @@ function TestComponent() {
         const [cb3, checked3] = CheckBox();
         const [cb4, checked4] = CheckBox();
 
-        const asyncValue = delay(1000).then(() => {
+        const asyncValue = asyncDelay(1000).then(() => {
             throw new Error('async error');
         });
-        const asyncTrue = delay(2000).then(() => true);
+        const asyncTrue = asyncDelay(2000).then(() => true);
 
         return When(() => asyncTrue,
             cb1, H('br'),
