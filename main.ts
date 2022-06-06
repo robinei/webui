@@ -1,8 +1,8 @@
-import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, toError, WritableKeys, errorDescription, asyncDelay } from './util';
+import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, toError, WritableKeys, errorDescription, asyncDelay, tvRemove } from './util';
 
-type Primitive = null | undefined | string | number | boolean | symbol;
+type Primitive = null | undefined | string | number | boolean;
 
-type Value<T> = T | Promise<T> | (() => T | Promise<T>);
+type Value<T> = T | Promise<T> | (() => T | Promise<T>) | Slot<T>;
 
 type FragmentItem = Value<Primitive> | Component | FragmentItem[];
 
@@ -190,6 +190,17 @@ class Component<N extends Node | null = Node | null> {
                 wrappedWatcher(v);
             }, (e) => {
                 this.injectError(e);
+            });
+            return this;
+        }
+
+        if (value instanceof Slot) {
+            this.addMountListener(() => {
+                value.addChangeListener(boundWatcher);
+                boundWatcher(value.get());
+            });
+            this.addUnmountListener(() => {
+                value.removeChangeListener(boundWatcher);
             });
             return this;
         }
@@ -413,13 +424,13 @@ class Component<N extends Node | null = Node | null> {
         if (this.#mounted) {
             throw new Error('already mounted');
         }
-        this.#mounted = true;
         tvForEach(this.#mountListeners, (listener) => {
             listener();
         });
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
             c.#mount();
         }
+        this.#mounted = true;
     }
 
     #unmount(): void {
@@ -610,20 +621,67 @@ class Component<N extends Node | null = Node | null> {
         if (!this.#mounted) {
             return;
         }
+        const t0 = performance.now();
         updaterCount = 0;
         touchedComponents = 0;
         const root = this.root;
         root.update();
-        console.log('Ran', updaterCount, 'updaters. Touched', touchedComponents, 'of', componentTreeSize(root), 'components.');
+        const t1 = performance.now();
+        console.log('Ran', updaterCount, 'updaters. Touched', touchedComponents, 'of', componentTreeSize(root), 'components. Time:', (t1 - t0).toFixed(2), 'ms');
     }
 }
+
+
+class Slot<T> {
+    #value: T;
+    #listeners: ThinVec<(value: T) => void> = tvEmpty;
+
+    constructor(initialValue: T) {
+        this.#value = initialValue;
+    }
+
+    addChangeListener(listener: (value: T) => void): void {
+        this.#listeners = tvPush(this.#listeners, listener);
+    }
+
+    removeChangeListener(listener: (value: T) => void): void {
+        this.#listeners = tvRemove(this.#listeners, listener);
+    }
+
+    set(value: T): void {
+        if (this.#value !== value) {
+            this.#value = value;
+            tvForEach(this.#listeners, (listener) => listener(value));
+        }
+    }
+
+    get = (): T => {
+        return this.#value;
+    };
+}
+
+
 
 let updaterCount = 0;
 let touchedComponents = 0;
 
 
 function isConstValue<T>(value: Value<T>): value is T {
-    return typeof value !== 'function' && !(value instanceof Promise);
+    return typeof value !== 'function' && !(value instanceof Promise) && !(value instanceof Slot);
+}
+
+function isPrimitive(value: unknown): value is Primitive {
+    if (value === null) {
+        return true;
+    }
+    switch (typeof value) {
+    case 'string':
+    case 'number':
+    case 'boolean':
+    case 'undefined':
+        return true;
+    }
+    return false;
 }
 
 
@@ -743,26 +801,26 @@ function Txt(value: Value<Primitive>): Component<Text> {
 }
 
 
-function With<T>(input: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component | Component[] {
-    if (isConstValue(input)) {
-        return flattenFragment(mapper(input));
+function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component | Component[] {
+    if (isConstValue(value)) {
+        return flattenFragment(mapper(value));
     }
     const component = new Component(null, name ?? 'With');
-    component.addValueWatcher(input, (v) => {
+    component.addValueWatcher(value, (v) => {
         component.replaceChildren(flattenFragment(mapper(v)));
     });
     return component;
 }
 
 
-function If(predicate: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component | Component[] {
-    return With(predicate, (pred) => pred ? thenFragment : elseFragment, 'If');
+function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component | Component[] {
+    return With(condValue, (cond) => cond ? thenFragment : elseFragment, 'If');
 }
-function When(predicate: Value<boolean>, ...bodyFragment: FragmentItem[]): Component | Component[] {
-    return With(predicate, (pred) => pred ? bodyFragment : null, 'When');
+function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component | Component[] {
+    return With(condValue, (cond) => cond ? bodyFragment : null, 'When');
 }
-function Unless(predicate: Value<boolean>, ...bodyFragment: FragmentItem[]): Component | Component[] {
-    return With(predicate, (pred) => pred ? null : bodyFragment, 'Unless');
+function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component | Component[] {
+    return With(condValue, (cond) => cond ? null : bodyFragment, 'Unless');
 }
 
 
@@ -1001,8 +1059,8 @@ function TestComponent() {
         });
         const asyncTrue = asyncDelay(100).then(() => true);
 
-        let width = 10;
-        let height = 10;
+        let width = new Slot(10);
+        let height = new Slot(10);
 
         return When(() => asyncTrue,
             cb1, H('br'),
@@ -1022,17 +1080,19 @@ function TestComponent() {
             H('button', { onclick() { throw new Error('test error'); } }, 'Fail'), H('br'),
             
             'Width: ',
-            H('button', { onclick() { ++width; } }, '+'),
-            H('button', { onclick() { --width; } }, '-'),
+            H('input', { type: 'range', min: '1', max: '20', value: width.toString(), oninput(ev: Event) {
+                width.set((ev.target as any).value);
+            } }),
             H('br'),
             'Height: ',
-            H('button', { onclick() { ++height; } }, '+'),
-            H('button', { onclick() { --height; } }, '-'),
+            H('input', { type: 'range', min: '1', max: '20', value: height.toString(), oninput(ev: Event) {
+                height.set((ev.target as any).value);
+            } }),
             H('br'),
             H('table', null,
-                Repeat(() => height, (y) =>
+                Repeat(height, (y) =>
                     H('tr', null,
-                        Repeat(() => width, (x) =>
+                        Repeat(width, (x) =>
                             H('td', null, [((x+1)*(y+1)).toString(), ' | ']))))),
             
             //Suspense(() => "Loading...", () => asyncValue),
