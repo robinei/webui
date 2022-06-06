@@ -678,16 +678,36 @@ function componentTreeSize(component: Component): number {
 
 
 function iterateFragment(fragment: FragmentItem, handler: (component: Component) => void): void {
-    if (fragment === null || fragment === undefined) {
-        // ignore
-    } else if (fragment instanceof Component) {
-        handler(fragment);
-    } else if (Array.isArray(fragment)) {
-        for (const item of fragment) {
-            iterateFragment(item, handler);
+    let lastText = '';
+    next(fragment);
+    if (lastText) {
+        handler(StaticTxt(lastText));
+    }
+
+    function next(fragment: FragmentItem): void {
+        if (fragment === null || fragment === undefined) {
+            // ignore
+        } else if (fragment instanceof Component) {
+            if (lastText) {
+                handler(StaticTxt(lastText));
+                lastText = '';
+            }
+            handler(fragment);
+        } else if (Array.isArray(fragment)) {
+            for (const item of fragment) {
+                next(item);
+            }
+        } else {
+            if (isConstValue(fragment)) {
+                lastText += fragment?.toString() ?? '';
+            } else {
+                if (lastText) {
+                    handler(StaticTxt(lastText));
+                    lastText = '';
+                }
+                handler(Txt(fragment));
+            }
         }
-    } else {
-        handler(Txt(fragment));
     }
 }
 
@@ -707,6 +727,11 @@ function H<K extends keyof HTMLElementTagNameMap>(
     return new Component(document.createElement(tag))
         .setAttributes(attributes)
         .appendFragment(children);
+}
+
+
+function StaticTxt(value: string): Component<Text> {
+    return new Component(document.createTextNode(value));
 }
 
 
