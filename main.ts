@@ -802,6 +802,35 @@ function For<T>(itemsValue: Value<T[]>, itemFunc: (item: T) => FragmentItem): Co
 }
 
 
+function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component | Component[] {
+    if (isConstValue(countValue)) {
+        const fragment: FragmentItem[] = [];
+        for (let i = 0; i < countValue; ++i) {
+            fragment.push(itemFunc(i));
+        }
+        return flattenFragment(fragment);
+    }
+    
+    let fragmentSizes: number[] = [];
+    const component = new Component(null, 'Repeat');
+    component.addValueWatcher(countValue, (count) => {
+        while (fragmentSizes.length > count && fragmentSizes.length > 0) {
+            const fragmentSize = fragmentSizes.pop()!;
+            for (let i = 0; i < fragmentSize; ++i) {
+                component.removeChild(component.lastChild!);
+            }
+        }
+        while (fragmentSizes.length < count) {
+            const fragment = flattenFragment(itemFunc(fragmentSizes.length));
+            fragmentSizes.push(fragment.length);
+            component.appendChildren(fragment);
+        }
+
+    });
+    return component;
+}
+
+
 function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentItem, body: () => FragmentItem): Component {
     const component = new Component(null, 'ErrorBoundary').setErrorHandler(onError);
     initContent();
@@ -945,7 +974,10 @@ function TestComponent() {
         const asyncValue = asyncDelay(1000).then(() => {
             throw new Error('async error');
         });
-        const asyncTrue = asyncDelay(2000).then(() => true);
+        const asyncTrue = asyncDelay(100).then(() => true);
+
+        let width = 10;
+        let height = 10;
 
         return When(() => asyncTrue,
             cb1, H('br'),
@@ -960,8 +992,24 @@ function TestComponent() {
                     H('span', null, 'c'))),
             If(checked4,
                 H('span', null, 'd')),
+            
             H('br'),
-            H('button', { onclick() { throw new Error('test error'); } }, 'Fail'),
+            H('button', { onclick() { throw new Error('test error'); } }, 'Fail'), H('br'),
+            
+            'Width: ',
+            H('button', { onclick() { ++width; } }, '+'),
+            H('button', { onclick() { --width; } }, '-'),
+            H('br'),
+            'Height: ',
+            H('button', { onclick() { ++height; } }, '+'),
+            H('button', { onclick() { --height; } }, '-'),
+            H('br'),
+            H('table', null,
+                Repeat(() => height, (y) =>
+                    H('tr', null,
+                        Repeat(() => width, (x) =>
+                            H('td', null, [((x+1)*(y+1)).toString(), ' | ']))))),
+            
             //Suspense(() => "Loading...", () => asyncValue),
         );
 
