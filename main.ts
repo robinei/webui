@@ -424,23 +424,23 @@ class Component<N extends Node | null = Node | null> {
         if (this.#mounted) {
             throw new Error('already mounted');
         }
-        tvForEach(this.#mountListeners, (listener) => {
-            listener();
-        });
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
             c.#mount();
         }
         this.#mounted = true;
+        tvForEach(this.#mountListeners, (listener) => {
+            listener();
+        });
     }
 
     #unmount(): void {
         if (!this.#mounted) {
             throw new Error('not mounted');
         }
-        this.#mounted = false;
         tvForEach(this.#unmountListeners, (listener) => {
             listener();
         });
+        this.#mounted = false;
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
             c.#unmount();
         }
@@ -631,6 +631,11 @@ class Component<N extends Node | null = Node | null> {
     }
 }
 
+let updaterCount = 0;
+let touchedComponents = 0;
+
+
+
 
 class Slot<T> {
     #value: T;
@@ -660,10 +665,6 @@ class Slot<T> {
     };
 }
 
-
-
-let updaterCount = 0;
-let touchedComponents = 0;
 
 
 function isConstValue<T>(value: Value<T>): value is T {
@@ -717,6 +718,10 @@ function dumpComponentTree(root: Component): string {
         if (component.node instanceof Text) {
             result.push(': ');
             result.push(JSON.stringify(component.node.nodeValue));
+        } else if (!component.firstChild && component.node?.textContent) {
+            result.push(' (textContent = ');
+            result.push(JSON.stringify(component.node.textContent));
+            result.push(')');
         }
         result.push('\n');
         for (let c = component.firstChild; c; c = c.nextSibling) {
@@ -735,19 +740,21 @@ function componentTreeSize(component: Component): number {
 }
 
 
-function iterateFragment(fragment: FragmentItem, handler: (component: Component) => void): void {
+function iterateFragment(fragment: FragmentItem, handler: (component: Component) => void, returnLastText = false): string {
     let lastText = '';
     next(fragment);
-    if (lastText) {
-        handler(StaticTxt(lastText));
+    if (lastText && !returnLastText) {
+        handler(StaticText(lastText));
+        lastText = '';
     }
+    return lastText;
 
     function next(fragment: FragmentItem): void {
         if (fragment === null || fragment === undefined) {
             // ignore
         } else if (fragment instanceof Component) {
             if (lastText) {
-                handler(StaticTxt(lastText));
+                handler(StaticText(lastText));
                 lastText = '';
             }
             handler(fragment);
@@ -760,10 +767,10 @@ function iterateFragment(fragment: FragmentItem, handler: (component: Component)
                 lastText += fragment?.toString() ?? '';
             } else {
                 if (lastText) {
-                    handler(StaticTxt(lastText));
+                    handler(StaticText(lastText));
                     lastText = '';
                 }
-                handler(Txt(fragment));
+                handler(DynamicText(fragment));
             }
         }
     }
@@ -782,18 +789,26 @@ function H<K extends keyof HTMLElementTagNameMap>(
     attributes: Attributes<HTMLElementTagNameMap[K]> | null = null,
     ...children: FragmentItem[]
 ): Component<HTMLElementTagNameMap[K]>  {
-    return new Component(document.createElement(tag))
-        .setAttributes(attributes)
-        .appendFragment(children);
+    const component = new Component(document.createElement(tag)).setAttributes(attributes);
+    const lastText = iterateFragment(children, component.appendChild.bind(component), true);
+    if (lastText) {
+        if (component.firstChild) {
+            component.appendChild(StaticText(lastText));
+        } else {
+            // can only set textContent if there were no other children
+            component.node.textContent = lastText;
+        }
+    }
+    return component;
 }
 
 
-function StaticTxt(value: string): Component<Text> {
+function StaticText(value: string): Component<Text> {
     return new Component(document.createTextNode(value));
 }
 
 
-function Txt(value: Value<Primitive>): Component<Text> {
+function DynamicText(value: Value<Primitive>): Component<Text> {
     const node = document.createTextNode('');
     return new Component(node).addValueWatcher(value, (primitive) => {
         node.nodeValue = primitive?.toString() ?? '';
@@ -839,14 +854,15 @@ function Else<T>(_: T): true {
 }
 
 
-function For<T>(itemsValue: Value<T[]>, itemFunc: (item: T) => FragmentItem): Component | Component[] {
+function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component | Component[] {
     if (isConstValue(itemsValue)) {
-        return flattenFragment(itemsValue.map(itemFunc));
+        return flattenFragment(itemsValue.map(renderFunc));
     }
 
-    let map = new Map<T, Component[]>();
-    const component = new Component(null, 'For');
+    const keyOf = keyFunc ?? ((item) => item);
+    let map = new Map<unknown, Component[]>();
 
+    const component = new Component(null, 'For');
     component.addValueWatcher(itemsValue, (items) => {
         if (areChildrenEqual(items)) {
             return;
@@ -854,8 +870,9 @@ function For<T>(itemsValue: Value<T[]>, itemFunc: (item: T) => FragmentItem): Co
         const newMap = new Map();
         const children: Component[] = [];
         for (const item of items) {
-            const fragment = map.get(item) ?? flattenFragment(itemFunc(item));
-            newMap.set(item, fragment);
+            const key = keyOf(item);
+            const fragment = map.get(key) ?? flattenFragment(renderFunc(item));
+            newMap.set(key, fragment);
             for (const child of fragment) {
                 children.push(child);
             }
@@ -863,13 +880,12 @@ function For<T>(itemsValue: Value<T[]>, itemFunc: (item: T) => FragmentItem): Co
         component.replaceChildren(children);
         map = newMap;
     }, false);
-    
     return component;
 
     function areChildrenEqual(items: T[]): boolean {
         let c = component.firstChild;
         for (const item of items) {
-            let fragment = map.get(item);
+            let fragment = map.get(keyOf(item));
             if (!fragment) {
                 return false;
             }
@@ -1032,7 +1048,7 @@ function TodoListView(model: TodoListModel) {
         }, 'Select all'),
         Match(() => model.getItems().length % 2,
             [0, 'even'],
-            [1, Txt('odd')
+            [1, DynamicText('odd')
                     .addMountListener(function () {
                         console.log('mounted');
                         console.log('TestContext:', this.getContext(TestContext));
