@@ -72,6 +72,9 @@ class Component<N extends Node | null = Node | null> {
 
     #errorHandler: ((error: unknown) => boolean) | undefined;
 
+    #suspenseCount = 0;
+    #suspenseHandler: ((count: number) => void) | undefined;
+
     get node(): N { return this.#node; }
     get name(): string { return this.#name ?? this.#node?.nodeName ?? 'anonymous'; }
 
@@ -95,6 +98,16 @@ class Component<N extends Node | null = Node | null> {
 
     setErrorHandler(handler: ErrorHandler): Component<N> {
         this.#errorHandler = handler.bind(this);
+        return this;
+    }
+
+    setSuspenseHandler(handler: (count: number) => void): Component<N> {
+        this.#suspenseHandler = handler;
+        if (this.#parent) {
+            // we don't contribute to parent count when we have a handler
+            this.#parent.#addSuspenseCount(-this.#suspenseCount);
+        }
+        handler(this.#suspenseCount);
         return this;
     }
 
@@ -178,10 +191,13 @@ class Component<N extends Node | null = Node | null> {
         }
         
         if (value instanceof Promise) {
+            this.#addSuspenseCount(1);
             value.then((v) => {
                 wrappedWatcher(v);
             }, (e) => {
                 this.injectError(e);
+            }).finally(() => {
+                this.#addSuspenseCount(-1);
             });
             return this;
         }
@@ -212,6 +228,7 @@ class Component<N extends Node | null = Node | null> {
                 return; // don't listen to same Promise (even if equalCheck is false)
             }
             lastVal = newVal;
+            this.#addSuspenseCount(1);
             newVal.then((v) => {
                 if (newVal === lastVal) {
                     wrappedWatcher(v);
@@ -220,6 +237,8 @@ class Component<N extends Node | null = Node | null> {
                 if (newVal === lastVal) {
                     this.injectError(e);
                 }
+            }).finally(() => {
+                this.#addSuspenseCount(-1);
             });
         });
 
@@ -450,9 +469,17 @@ class Component<N extends Node | null = Node | null> {
         component.#parent = this;
 
         this.#addUpdateListenerCount(component.#updateListenerCount);
-        
+
+        const suspenseCount = component.#suspenseCount;
+
         if (this.#mounted) {
             component.mount();
+        }
+
+        if (!component.#suspenseHandler && suspenseCount) {
+            // component doesn't contribute to our count when it has a handler.
+            // use pre-mount count because if mount changed the count then that diff will already have been added here
+            this.#addSuspenseCount(suspenseCount);
         }
         
         const container = this.#container;
@@ -498,6 +525,10 @@ class Component<N extends Node | null = Node | null> {
 
         this.#maybeSetChildContainerNode(null);
         parent.#addUpdateListenerCount(-this.#updateListenerCount);
+        if (!this.#suspenseHandler) {
+            // we don't contribute to parent count when we have a handler
+            parent.#addSuspenseCount(-this.#suspenseCount);
+        }
     }
 
     #maybeSetChildContainerNode(node: Node | null): void {
@@ -584,8 +615,24 @@ class Component<N extends Node | null = Node | null> {
     }
 
     #addUpdateListenerCount(diff: number): void {
+        if (diff === 0) {
+            return;
+        }
         for (let c: Component | null = this; c; c = c.#parent) {
             c.#updateListenerCount += diff;
+        }
+    }
+
+    #addSuspenseCount(diff: number): void {
+        if (diff === 0) {
+            return;
+        }
+        for (let c: Component | null = this; c; c = c.#parent) {
+            c.#suspenseCount += diff;
+            if (c.#suspenseHandler) {
+                c.#suspenseHandler(c.#suspenseCount);
+                break;
+            }
         }
     }
     
@@ -927,6 +974,30 @@ function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentIt
 }
 
 
+function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: FragmentItem[]): Component {
+    const fallback = flattenFragment(fallbackFragment);
+    const body = new Component(null, 'SuspenseBody').appendFragment(bodyFragment);
+    let bodyActive = false;
+    let fallbackActive = false;
+    const component = new Component(null, 'Suspense');
+    body.setSuspenseHandler((count) => {
+        if (count > 0 && !fallbackActive) {
+            component.clear();
+            component.appendChildren(fallback);
+            bodyActive = false;
+            fallbackActive = true;
+        }
+        else if (count === 0 && !bodyActive) {
+            component.clear();
+            component.appendChild(body);
+            bodyActive = true;
+            fallbackActive = false;
+        }
+    });
+    return component;
+}
+
+
 
 
 
@@ -1035,15 +1106,12 @@ function TestComponent() {
         const [cb3, checked3] = CheckBox();
         const [cb4, checked4] = CheckBox();
 
-        const asyncValue = asyncDelay(1000).then(() => {
-            throw new Error('async error');
-        });
-        const asyncTrue = asyncDelay(100).then(() => true);
+        const asyncTrue = asyncDelay(500).then(() => true);
 
         let width = new Slot(10);
         let height = new Slot(10);
 
-        return When(() => asyncTrue,
+        return Suspense("Loading...", When(() => asyncTrue,
             cb1, H('br'),
             cb2, H('br'),
             cb3, H('br'),
@@ -1075,9 +1143,7 @@ function TestComponent() {
                     H('tr', null,
                         Repeat(width, (x) =>
                             H('td', null, [((x+1)*(y+1)).toString(), ' | ']))))),
-            
-            //Suspense(() => "Loading...", () => asyncValue),
-        );
+        ));
 
         function CheckBox() {
             const cb = H('input', { type: 'checkbox', onchange: () => {} });
