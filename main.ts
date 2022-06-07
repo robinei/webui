@@ -47,12 +47,6 @@ type RewriteThisParameter<F> =
     F extends (...args: infer Args) => infer Ret ? (this: Component, ...args: Args) => Ret : never;
 
 
-class Context<_> {
-    #name: string;
-    get name(): string { return this.#name; }
-    constructor(name: string) { this.#name = name; }
-}
-
 
 type ErrorHandler = (this: Component, error: unknown) => boolean;
 
@@ -75,8 +69,6 @@ class Component<N extends Node | null = Node | null> {
     #unmountListeners: ThinVec<() => void> = tvEmpty;
     #updateListeners: ThinVec<() => void | false> = tvEmpty;
     #updateListenerCount = 0; // count for subtree
-
-    #contextValues: Map<Context<unknown>, unknown> | undefined;
 
     #errorHandler: ((error: unknown) => boolean) | undefined;
 
@@ -232,26 +224,6 @@ class Component<N extends Node | null = Node | null> {
         });
 
         return this;
-    }
-
-    provideContext<T>(context: Context<T>, value: T): Component<N> {
-        if (!this.#contextValues) {
-            this.#contextValues = new Map();
-        }
-        this.#contextValues.set(context, value);
-        return this;
-    }
-
-    getContext<T>(context: Context<T>): T {
-        for (let c: Component | null = this; c; c = c.#parent) {
-            if (c.#contextValues) {
-                const value = c.#contextValues.get(context);
-                if (value !== undefined) {
-                    return value as T;
-                }
-            }
-        }
-        throw new Error('context not provided: ' + context.name);
     }
 
     setAttributes(attributes: Attributes<N> | null): Component<N> {
@@ -1016,8 +988,6 @@ function TodoItemView(item: TodoItemModel) {
     );
 }
 
-const TestContext = new Context<string>('TestContext');
-
 function TodoListView(model: TodoListModel) {
     const input = H('input');
     return H('div', null,
@@ -1048,16 +1018,11 @@ function TodoListView(model: TodoListModel) {
         }, 'Select all'),
         Match(() => model.getItems().length % 2,
             [0, 'even'],
-            [1, DynamicText('odd')
-                    .addMountListener(function () {
-                        console.log('mounted');
-                        console.log('TestContext:', this.getContext(TestContext));
-                    })
-                    .addUnmountListener(function () {
-                        console.log('unmounted');
-                    })]),
+            [1, StaticText('odd')
+                    .addMountListener(() => console.log('mounted'))
+                    .addUnmountListener(() => console.log('unmounted'))]),
         For(model.getItems, TodoItemView),
-    ).provideContext(TestContext, 'foobar');
+    );
 }
 
 
