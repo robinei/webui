@@ -2,7 +2,7 @@ import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, toError
 
 type Primitive = null | undefined | string | number | boolean;
 
-type Value<T> = T | Promise<T> | (() => T | Promise<T>) | Slot<T>;
+type Value<T> = T | Promise<T> | (() => T | Promise<T>) | Prop<T>;
 
 type FragmentItem = Value<Primitive> | Component | FragmentItem[];
 
@@ -202,10 +202,10 @@ class Component<N extends Node | null = Node | null> {
             return this;
         }
 
-        if (value instanceof Slot) {
+        if (isProp<T>(value)) {
             this.addMountListener(() => {
                 value.addChangeListener(boundWatcher);
-                boundWatcher(value.get());
+                boundWatcher(value());
             });
             this.addUnmountListener(() => {
                 value.removeChangeListener(boundWatcher);
@@ -656,38 +656,38 @@ let touchedComponents = 0;
 
 
 
-class Slot<T> {
-    #value: T;
-    #listeners: ThinVec<(value: T) => void> = tvEmpty;
 
-    constructor(initialValue: T) {
-        this.#value = initialValue;
-    }
-
-    addChangeListener(listener: (value: T) => void): void {
-        this.#listeners = tvPush(this.#listeners, listener);
-    }
-
-    removeChangeListener(listener: (value: T) => void): void {
-        this.#listeners = tvRemove(this.#listeners, listener);
-    }
-
-    set(value: T): void {
-        if (this.#value !== value) {
-            this.#value = value;
-            tvForEach(this.#listeners, (listener) => listener(value));
-        }
-    }
-
-    get = (): T => {
-        return this.#value;
-    };
+interface Prop<T> {
+    (): T;
+    set(newValue: T): void;
+    addChangeListener(listener: (value: T) => void): void;
+    removeChangeListener(listener: (value: T) => void): void;
+}
+function makeProp<T>(value: T): Prop<T> {
+    let listeners: ThinVec<(value: T) => void> = tvEmpty;
+    return Object.assign(() => value, {
+        set(newValue: T): void {
+            if (value !== newValue) {
+                value = newValue;
+                tvForEach(listeners, (listener) => listener(value));
+            }
+        },
+        addChangeListener(listener: (value: T) => void): void {
+            listeners = tvPush(listeners, listener);
+        },
+        removeChangeListener(listener: (value: T) => void): void {
+            listeners = tvRemove(listeners, listener);
+        },
+    } as const);
+}
+function isProp<T>(func: unknown): func is Prop<T> {
+    return typeof func === 'function' && !!((func as any).addChangeListener);
 }
 
 
 
 function isConstValue<T>(value: Value<T>): value is T {
-    return typeof value !== 'function' && !(value instanceof Promise) && !(value instanceof Slot);
+    return typeof value !== 'function' && !(value instanceof Promise);
 }
 
 function isPrimitive(value: unknown): value is Primitive {
@@ -1108,8 +1108,8 @@ function TestComponent() {
 
         const asyncTrue = asyncDelay(500).then(() => true);
 
-        let width = new Slot(10);
-        let height = new Slot(10);
+        let width = makeProp(15);
+        let height = makeProp(10);
 
         return Suspense("Loading...", When(() => asyncTrue,
             cb1, H('br'),
@@ -1128,16 +1128,8 @@ function TestComponent() {
             H('br'),
             H('button', { onclick() { throw new Error('test error'); } }, 'Fail'), H('br'),
             
-            'Width: ',
-            H('input', { type: 'range', min: '1', max: '20', value: width.toString(), oninput(ev: Event) {
-                width.set((ev.target as any).value);
-            } }),
-            H('br'),
-            'Height: ',
-            H('input', { type: 'range', min: '1', max: '20', value: height.toString(), oninput(ev: Event) {
-                height.set((ev.target as any).value);
-            } }),
-            H('br'),
+            'Width: ', Slider(width, 1, 20), H('br'),
+            'Height: ', Slider(height, 1, 20), H('br'),
             H('table', null,
                 Repeat(height, (y) =>
                     H('tr', null,
@@ -1145,8 +1137,14 @@ function TestComponent() {
                             H('td', null, [((x+1)*(y+1)).toString(), ' | ']))))),
         ));
 
+        function Slider(prop: Prop<number>, min: number, max: number) {
+            return H('input', { type: 'range', min: min.toString(), max: max.toString(), value: prop().toString(), oninput(ev: Event) {
+                prop.set((ev.target as any).value);
+            } });
+        }
+
         function CheckBox() {
-            const cb = H('input', { type: 'checkbox', onchange: () => {} });
+            const cb = H('input', { type: 'checkbox', onchange: () => { /* empty handler still triggers update */ } });
             return [cb, () => cb.node.checked] as const;
         }
     });
