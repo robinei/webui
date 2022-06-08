@@ -30,25 +30,18 @@ type EventAttributes<N> = {
     ]?: RewriteThisParameter<N[K]>;
 };
 
-type ComponentAttributes = {
-    onmount?: MountListener;
-    onunmount?: UnmountListener;
-    onupdate?: UpdateListener;
+type ComponentAttributes<N extends Node | null> = {
+    onmount?: (this: Component<N>) => void;
+    onunmount?: (this: Component<N>) => void;
+    onupdate?: (this: Component<N>) => void | false;
 };
 
-type Attributes<N> = PropertyAttributes<N> & EventAttributes<N> & ComponentAttributes;
-
-type MountListener = (this: Component) => void;
-type UnmountListener = (this: Component) => void;
-type UpdateListener = (this: Component) => void | false;
+type Attributes<N extends Node | null> = PropertyAttributes<N> & EventAttributes<N> & ComponentAttributes<N>;
 
 type RewriteThisParameter<F> =
     F extends (this: infer _, ...args: infer Args) => infer Ret ? (this: Component, ...args: Args) => Ret :
     F extends (...args: infer Args) => infer Ret ? (this: Component, ...args: Args) => Ret : never;
 
-
-
-type ErrorHandler = (this: Component, error: unknown) => boolean;
 
 export const NULL: unique symbol = Symbol();
 
@@ -71,6 +64,7 @@ class Component<N extends Node | null = Node | null> {
     #updateListenerCount = 0; // count for subtree
 
     #errorHandler: ((error: unknown) => boolean) | undefined;
+    #unhandledError: unknown;
 
     #suspenseCount = 0;
     #suspenseHandler: ((count: number) => void) | undefined;
@@ -96,22 +90,33 @@ class Component<N extends Node | null = Node | null> {
         this.#container = node;
     }
 
-    setErrorHandler(handler: ErrorHandler): Component<N> {
+    setErrorHandler(handler: (this: Component<N>, error: unknown) => boolean): Component<N> {
         this.#errorHandler = handler.bind(this);
         return this;
     }
 
-    setSuspenseHandler(handler: (count: number) => void): Component<N> {
-        this.#suspenseHandler = handler;
-        if (this.#parent) {
+    setSuspenseHandler(handler: (this: Component<N>, count: number) => void): Component<N> {
+        this.#suspenseHandler = handler.bind(this);
+        if (this.#suspenseCount && this.#parent) {
             // we don't contribute to parent count when we have a handler
             this.#parent.#addSuspenseCount(-this.#suspenseCount);
         }
-        handler(this.#suspenseCount);
+        this.#suspenseHandler(this.#suspenseCount);
         return this;
     }
 
-    addMountListener(listener: MountListener): Component<N> {
+    async trackAsyncLoad(load: (this: Component<N>) => Promise<void>): Promise<void> {
+        this.#addSuspenseCount(1);
+        try {
+            await load.bind(this)();
+        } catch (e) {
+            this.injectError(e);
+        } finally {
+            this.#addSuspenseCount(-1);
+        }
+    }
+
+    addMountListener(listener: (this: Component<N>) => void): Component<N> {
         const boundListener = listener.bind(this);
         const wrappedListener = () => {
             try {
@@ -127,7 +132,7 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addUnmountListener(listener: UnmountListener): Component<N> {
+    addUnmountListener(listener: (this: Component<N>) => void): Component<N> {
         const boundListener = listener.bind(this);
         this.#unmountListeners = tvPush(this.#unmountListeners, () => {
             try {
@@ -139,7 +144,7 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addUpdateListener(listener: UpdateListener): Component<N> {
+    addUpdateListener(listener: (this: Component<N>) => void | false): Component<N> {
         const boundListener = listener.bind(this);
         this.#updateListeners = tvPush(this.#updateListeners, () => {
             try {
@@ -191,13 +196,9 @@ class Component<N extends Node | null = Node | null> {
         }
         
         if (value instanceof Promise) {
-            this.#addSuspenseCount(1);
-            value.then((v) => {
+            this.trackAsyncLoad(async () => {
+                const v = await value;
                 wrappedWatcher(v);
-            }, (e) => {
-                this.injectError(e);
-            }).finally(() => {
-                this.#addSuspenseCount(-1);
             });
             return this;
         }
@@ -228,17 +229,11 @@ class Component<N extends Node | null = Node | null> {
                 return; // don't listen to same Promise (even if equalCheck is false)
             }
             lastVal = newVal;
-            this.#addSuspenseCount(1);
-            newVal.then((v) => {
+            this.trackAsyncLoad(async () => {
+                const v = await newVal;
                 if (newVal === lastVal) {
                     wrappedWatcher(v);
                 }
-            }, (e) => {
-                if (newVal === lastVal) {
-                    this.injectError(e);
-                }
-            }).finally(() => {
-                this.#addSuspenseCount(-1);
             });
         });
 
@@ -380,10 +375,14 @@ class Component<N extends Node | null = Node | null> {
             if (listener() === false) {
                 skipSubtree = true;
             }
+            return this.#mounted;
         });
         if (!skipSubtree) {
             for (let c = this.#firstChild; c; c = c.#nextSibling) {
                 if (c.#updateListenerCount > 0) {
+                    if (!this.#mounted) {
+                        return this;
+                    }
                     c.update();
                 }
             }
@@ -406,6 +405,7 @@ class Component<N extends Node | null = Node | null> {
             }
         }
         if (!handled) {
+            root.#unhandledError = error;
             console.error(`unhandled error: ${errorDescription(error)}`);
         }
         root.#updateRoot();
@@ -413,28 +413,36 @@ class Component<N extends Node | null = Node | null> {
 
     #mount(): void {
         if (this.#mounted) {
-            throw new Error('already mounted');
-        }
-        for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            c.#mount();
+            return;
         }
         this.#mounted = true;
+        for (let c = this.#firstChild; c; c = c.#nextSibling) {
+            c.#mount();
+            if (!this.#mounted) {
+                return; // in case a mount handler caused the tree to be (synchronously) unmounted
+            }
+        }
         tvForEach(this.#mountListeners, (listener) => {
             listener();
+            return this.#mounted;
         });
     }
 
     #unmount(): void {
         if (!this.#mounted) {
-            throw new Error('not mounted');
+            return;
         }
-        tvForEach(this.#unmountListeners, (listener) => {
-            listener();
-        });
         this.#mounted = false;
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
             c.#unmount();
+            if (this.#mounted) {
+                return; // in case an unmount handler caused the tree to be (synchronously) mounted
+            }
         }
+        tvForEach(this.#unmountListeners, (listener) => {
+            listener();
+            return !this.#mounted;
+        });
     }
 
     #attachComponent(component: Component, before: Component | null = null): void {
@@ -443,6 +451,9 @@ class Component<N extends Node | null = Node | null> {
         }
         if (component.#parent) {
             throw new Error('component is already attached to a component');
+        }
+        if (component.#mounted) {
+            throw new Error('component already mounted');
         }
 
         if (before) {
@@ -468,27 +479,35 @@ class Component<N extends Node | null = Node | null> {
         component.#nextSibling = before;
         component.#parent = this;
 
-        this.#addUpdateListenerCount(component.#updateListenerCount);
-
-        const suspenseCount = component.#suspenseCount;
-
-        if (this.#mounted) {
-            component.mount();
-        }
-
-        if (!component.#suspenseHandler && suspenseCount) {
-            // component doesn't contribute to our count when it has a handler.
-            // use pre-mount count because if mount changed the count then that diff will already have been added here
-            this.#addSuspenseCount(suspenseCount);
+        if (component.#updateListenerCount) {
+            this.#addUpdateListenerCount(component.#updateListenerCount);
         }
         
         const container = this.#container;
         if (container) {
             const referenceNode = (before ? before.#getFirstNodeGoingForward() : component.#getLastNodeGoingBackward(false)?.nextSibling) ?? null;
-            component.#maybeSetChildContainerNode(container);
+            if (!component.node) {
+                component.#setChildContainerNode(container);
+            }
             component.#forEachNode((node) => {
                 container.insertBefore(node, referenceNode);
             });
+        }
+
+        if (component.#suspenseCount && !component.#suspenseHandler) {
+            // component doesn't contribute to our count when it has a handler.
+            // use pre-mount count because if mount changed the count then that diff will already have been added here
+            this.#addSuspenseCount(component.#suspenseCount);
+        }
+
+        if (this.#mounted) {
+            component.mount();
+        }
+
+        if (component.#unhandledError !== undefined) {
+            const e = component.#unhandledError;
+            component.#unhandledError = undefined;
+            this.injectError(e);
         }
     }
 
@@ -496,17 +515,6 @@ class Component<N extends Node | null = Node | null> {
         const parent = this.#parent;
         if (!parent) {
             throw new Error('component is not attached to parent');
-        }
-
-        if (this.#mounted) {
-            this.#unmount();
-        }
-        
-        const container = parent.#container;
-        if (container) {
-            this.#forEachNode((node) => {
-                container.removeChild(node);
-            });
         }
 
         if (this.#prevSibling) {
@@ -523,22 +531,36 @@ class Component<N extends Node | null = Node | null> {
         this.#nextSibling = null;
         this.#parent = null;
 
-        this.#maybeSetChildContainerNode(null);
-        parent.#addUpdateListenerCount(-this.#updateListenerCount);
-        if (!this.#suspenseHandler) {
+        if (this.#updateListenerCount) {
+            parent.#addUpdateListenerCount(-this.#updateListenerCount);
+        }
+        
+        const container = parent.#container;
+        if (container) {
+            if (!this.#node) {
+                this.#setChildContainerNode(null);
+            }
+            this.#forEachNode((node) => {
+                container.removeChild(node);
+            });
+        }
+
+        if (this.#suspenseCount && !this.#suspenseHandler) {
             // we don't contribute to parent count when we have a handler
             parent.#addSuspenseCount(-this.#suspenseCount);
         }
+
+        if (this.#mounted) {
+            this.#unmount();
+        }
     }
 
-    #maybeSetChildContainerNode(node: Node | null): void {
-        if (this.#node) {
-            // if this.#node is non-null then it will always be the child container node
-            return;
-        }
+    #setChildContainerNode(node: Node | null): void {
         this.#container = node;
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            c.#maybeSetChildContainerNode(node);
+            if (!c.#node) {
+                c.#setChildContainerNode(node);
+            }
         }
     }
 
@@ -615,22 +637,20 @@ class Component<N extends Node | null = Node | null> {
     }
 
     #addUpdateListenerCount(diff: number): void {
-        if (diff === 0) {
-            return;
-        }
         for (let c: Component | null = this; c; c = c.#parent) {
             c.#updateListenerCount += diff;
         }
     }
 
     #addSuspenseCount(diff: number): void {
-        if (diff === 0) {
-            return;
-        }
         for (let c: Component | null = this; c; c = c.#parent) {
             c.#suspenseCount += diff;
             if (c.#suspenseHandler) {
-                c.#suspenseHandler(c.#suspenseCount);
+                try {
+                    c.#suspenseHandler(c.#suspenseCount);
+                } catch (e) {
+                    c.injectError(e);
+                }
                 break;
             }
         }
@@ -977,22 +997,44 @@ function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentIt
 function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: FragmentItem[]): Component {
     const fallback = flattenFragment(fallbackFragment);
     const body = new Component(null, 'SuspenseBody').appendFragment(bodyFragment);
-    let bodyActive = false;
-    let fallbackActive = false;
     const component = new Component(null, 'Suspense');
+    let state: 'body' | 'fallback' | undefined;
     body.setSuspenseHandler((count) => {
-        if (count > 0 && !fallbackActive) {
-            component.clear();
-            component.appendChildren(fallback);
-            bodyActive = false;
-            fallbackActive = true;
+        if (count > 0) {
+            if (state !== 'fallback') {
+                state = 'fallback';
+                component.clear();
+                component.appendChildren(fallback);
+            }
+        } else {
+            if (state !== 'body') {
+                state = 'body';
+                component.clear();
+                component.appendChild(body);
+            }
         }
-        else if (count === 0 && !bodyActive) {
-            component.clear();
-            component.appendChild(body);
-            bodyActive = true;
-            fallbackActive = false;
+    });
+    return component;
+}
+
+
+function Lazy(bodyThunk: () => FragmentItem | Promise<FragmentItem>): Component {
+    const component = new Component(null, 'Lazy');
+    let loaded = false;
+    component.addMountListener(() => {
+        if (loaded) {
+            return;
         }
+        loaded = true;
+        const bodyResult = bodyThunk();
+        if (!(bodyResult instanceof Promise)) {
+            component.appendFragment(bodyResult);
+            return;
+        }
+        component.trackAsyncLoad(async () => {
+            const loadedBody = await bodyResult;
+            component.appendFragment(loadedBody);
+        });
     });
     return component;
 }
@@ -1111,7 +1153,7 @@ function TestComponent() {
         let width = makeProp(15);
         let height = makeProp(10);
 
-        return Suspense("Loading...", When(() => asyncTrue,
+        return Suspense('Loading...', When(asyncTrue,
             cb1, H('br'),
             cb2, H('br'),
             cb3, H('br'),
@@ -1127,6 +1169,14 @@ function TestComponent() {
             
             H('br'),
             H('button', { onclick() { throw new Error('test error'); } }, 'Fail'), H('br'),
+
+            Lazy(async () => {
+                await asyncDelay(500);
+                return ['Loaded 1', H('br')];
+            }),
+            Lazy(() => {
+                return ['Loaded 2', H('br')];
+            }),
             
             'Width: ', Slider(width, 1, 20), H('br'),
             'Height: ', Slider(height, 1, 20), H('br'),

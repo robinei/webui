@@ -119,7 +119,7 @@ export function tvLast<T>(vec: ThinVec<T>): T | undefined {
     return vec[vec.length - 1];
 }
 
-export function tvForEach<T>(vec: ThinVec<T>, func: (value: T) => void): void {
+export function tvForEach<T>(vec: ThinVec<T>, func: (value: T) => void | boolean): void {
     if (vec === tvEmpty) {
         return;
     }
@@ -128,7 +128,9 @@ export function tvForEach<T>(vec: ThinVec<T>, func: (value: T) => void): void {
         return;
     }
     for (const value of vec) {
-        func(value);
+        if (func(value) === false) {
+            break;
+        }
     }
 }
 
