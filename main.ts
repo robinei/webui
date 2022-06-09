@@ -283,25 +283,119 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    appendFragment(fragment: FragmentItem): Component<N> {
-        iterateFragment(fragment, this.appendChild.bind(this));
-        return this;
-    }
+    insertBefore(child: Component, before: Component | null = null): Component<N> {
+        if (child === this) {
+            throw new Error('cannot attach component to itself');
+        }
+        if (child.#parent) {
+            throw new Error('component is already attached to a component');
+        }
+        if (child.#mounted) {
+            throw new Error('component already mounted');
+        }
 
-    appendChild(child: Component): Component<N> {
-        this.#attachComponent(child);
-        return this;
-    }
+        if (before) {
+            if (before.#parent !== this) {
+                throw new Error('reference component not child of this component');
+            }
+            if (before.#prevSibling) {
+                before.#prevSibling.#nextSibling = child;
+            } else {
+                this.#firstChild = child;
+            }
+            child.#prevSibling = before.#prevSibling;
+            before.#prevSibling = child;
+        } else {
+            if (this.#lastChild) {
+                this.#lastChild.#nextSibling = child;
+            } else {
+                this.#firstChild = child;
+            }
+            child.#prevSibling = this.#lastChild;
+            this.#lastChild = child;
+        }
+        child.#nextSibling = before;
+        child.#parent = this;
 
-    appendChildren(children: Component[]): Component<N> {
-        for (const child of children) {
-            this.appendChild(child);
+        if (child.#updateListenerCount) {
+            this.#addUpdateListenerCount(child.#updateListenerCount);
+        }
+        
+        const container = this.#container;
+        if (container) {
+            const referenceNode = (before ? before.#getFirstNodeGoingForward() : child.#getLastNodeGoingBackward(false)?.nextSibling) ?? null;
+            if (!child.node) {
+                child.#setChildContainerNode(container);
+            }
+            child.#forEachNode((node) => {
+                container.insertBefore(node, referenceNode);
+            });
+        }
+
+        if (child.#suspenseCount && !child.#suspenseHandler) {
+            // component doesn't contribute to our count when it has a handler.
+            // use pre-mount count because if mount changed the count then that diff will already have been added here
+            this.#addSuspenseCount(child.#suspenseCount);
+        }
+
+        if (this.#mounted) {
+            child.mount();
+        }
+
+        if (child.#unhandledError !== undefined) {
+            const e = child.#unhandledError;
+            child.#unhandledError = undefined;
+            this.injectError(e);
         }
         return this;
     }
 
-    insertBefore(child: Component, reference: Component | null): Component<N> {
-        this.#attachComponent(child, reference);
+    removeChild(child: Component): Component<N> {
+        if (child.#parent !== this) {
+            throw new Error('not child of this node');
+        }
+
+        if (child.#prevSibling) {
+            child.#prevSibling.#nextSibling = child.#nextSibling;
+        } else {
+            this.#firstChild = child.#nextSibling;
+        }
+        if (child.#nextSibling) {
+            child.#nextSibling.#prevSibling = child.#prevSibling;
+        } else {
+            this.#lastChild = child.#prevSibling;
+        }
+        child.#prevSibling = null;
+        child.#nextSibling = null;
+        child.#parent = null;
+
+        if (child.#updateListenerCount) {
+            this.#addUpdateListenerCount(-child.#updateListenerCount);
+        }
+        
+        const container = this.#container;
+        if (container) {
+            if (!child.#node) {
+                child.#setChildContainerNode(null);
+            }
+            child.#forEachNode((node) => {
+                container.removeChild(node);
+            });
+        }
+
+        if (child.#suspenseCount && !child.#suspenseHandler) {
+            // we don't contribute to parent count when we have a handler
+            this.#addSuspenseCount(-child.#suspenseCount);
+        }
+
+        if (child.#mounted) {
+            child.#unmount();
+        }
+        return this;
+    }
+
+    appendChild(child: Component): Component<N> {
+        this.insertBefore(child);
         return this;
     }
 
@@ -310,20 +404,24 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    removeChild(child: Component): Component<N> {
-        if (child.#parent !== this) {
-            throw new Error('not child of this node');
-        }
-        child.#detachFromParent();
-        return this;
-    }
-
     replaceChild(replacement: Component, replaced: Component): Component<N> {
         if (replacement === replaced) {
             return this;
         }
-        this.#attachComponent(replacement, replaced);
-        replaced.#detachFromParent();
+        this.insertBefore(replacement, replaced);
+        this.removeChild(replaced);
+        return this;
+    }
+
+    appendFragment(fragment: FragmentItem): Component<N> {
+        iterateFragment(fragment, this.appendChild.bind(this));
+        return this;
+    }
+
+    appendChildren(children: Component[]): Component<N> {
+        for (const child of children) {
+            this.appendChild(child);
+        }
         return this;
     }
 
@@ -353,7 +451,7 @@ class Component<N extends Node | null = Node | null> {
             if (!child) {
                 break;
             }
-            child.#detachFromParent();
+            this.removeChild(child);
         }
         return this;
     }
@@ -443,116 +541,6 @@ class Component<N extends Node | null = Node | null> {
             listener();
             return !this.#mounted;
         });
-    }
-
-    #attachComponent(component: Component, before: Component | null = null): void {
-        if (component === this) {
-            throw new Error('cannot attach component to itself');
-        }
-        if (component.#parent) {
-            throw new Error('component is already attached to a component');
-        }
-        if (component.#mounted) {
-            throw new Error('component already mounted');
-        }
-
-        if (before) {
-            if (before.#parent !== this) {
-                throw new Error('reference component not child of this component');
-            }
-            if (before.#prevSibling) {
-                before.#prevSibling.#nextSibling = component;
-            } else {
-                this.#firstChild = component;
-            }
-            component.#prevSibling = before.#prevSibling;
-            before.#prevSibling = component;
-        } else {
-            if (this.#lastChild) {
-                this.#lastChild.#nextSibling = component;
-            } else {
-                this.#firstChild = component;
-            }
-            component.#prevSibling = this.#lastChild;
-            this.#lastChild = component;
-        }
-        component.#nextSibling = before;
-        component.#parent = this;
-
-        if (component.#updateListenerCount) {
-            this.#addUpdateListenerCount(component.#updateListenerCount);
-        }
-        
-        const container = this.#container;
-        if (container) {
-            const referenceNode = (before ? before.#getFirstNodeGoingForward() : component.#getLastNodeGoingBackward(false)?.nextSibling) ?? null;
-            if (!component.node) {
-                component.#setChildContainerNode(container);
-            }
-            component.#forEachNode((node) => {
-                container.insertBefore(node, referenceNode);
-            });
-        }
-
-        if (component.#suspenseCount && !component.#suspenseHandler) {
-            // component doesn't contribute to our count when it has a handler.
-            // use pre-mount count because if mount changed the count then that diff will already have been added here
-            this.#addSuspenseCount(component.#suspenseCount);
-        }
-
-        if (this.#mounted) {
-            component.mount();
-        }
-
-        if (component.#unhandledError !== undefined) {
-            const e = component.#unhandledError;
-            component.#unhandledError = undefined;
-            this.injectError(e);
-        }
-    }
-
-    #detachFromParent(): void {
-        const parent = this.#parent;
-        if (!parent) {
-            throw new Error('component is not attached to parent');
-        }
-
-        if (this.#prevSibling) {
-            this.#prevSibling.#nextSibling = this.#nextSibling;
-        } else {
-            parent.#firstChild = this.#nextSibling;
-        }
-        if (this.#nextSibling) {
-            this.#nextSibling.#prevSibling = this.#prevSibling;
-        } else {
-            parent.#lastChild = this.#prevSibling;
-        }
-        this.#prevSibling = null;
-        this.#nextSibling = null;
-        this.#parent = null;
-
-        if (this.#updateListenerCount) {
-            parent.#addUpdateListenerCount(-this.#updateListenerCount);
-        }
-        
-        const container = parent.#container;
-        if (container) {
-            if (!this.#node) {
-                this.#setChildContainerNode(null);
-            }
-            this.#forEachNode((node) => {
-                container.removeChild(node);
-            });
-        }
-
-        if (this.#suspenseCount && !this.#suspenseHandler) {
-            // we don't contribute to parent count when we have a handler
-            parent.#addSuspenseCount(-this.#suspenseCount);
-        }
-
-        if (this.#mounted) {
-            this.#unmount();
-        }
     }
 
     #setChildContainerNode(node: Node | null): void {
