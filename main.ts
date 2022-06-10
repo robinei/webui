@@ -2,7 +2,9 @@ import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, toError
 
 type Primitive = null | undefined | string | number | boolean;
 
-type Value<T> = T | Promise<T> | (() => T | Promise<T>) | Prop<T>;
+type DynamicValue<T> = Promise<T> | (() => T | Promise<T>) | Prop<T>;
+
+type Value<T> = T | DynamicValue<T>;
 
 type FragmentItem = Value<Primitive> | Component | FragmentItem[];
 
@@ -49,7 +51,7 @@ export const NULL: unique symbol = Symbol();
 class Component<N extends Node | null = Node | null> {
     readonly #node: N;
     readonly #name: string | undefined;
-    #container: Node | null = null;
+    #detached = false;
 
     #parent: Component | null = null;
     #firstChild: Component | null = null;
@@ -71,6 +73,7 @@ class Component<N extends Node | null = Node | null> {
 
     get node(): N { return this.#node; }
     get name(): string { return this.#name ?? this.#node?.nodeName ?? 'anonymous'; }
+    get isDetached(): boolean { return this.#detached; }
 
     get parent(): Component | null { return this.#parent; }
     get firstChild(): Component | null { return this.#firstChild; }
@@ -87,7 +90,6 @@ class Component<N extends Node | null = Node | null> {
     constructor(node: N, name?: string) {
         this.#node = node;
         this.#name = name;
-        this.#container = node;
     }
 
     setErrorHandler(handler: (this: Component<N>, error: unknown) => boolean): Component<N> {
@@ -283,6 +285,23 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
+    setDetached(detached: boolean): Component<N> {
+        if (this.#detached !== detached) {
+            this.#detached = detached;
+            if (this.#parent) {
+                const container = this.#parent.#getChildContainerNode();
+                if (container) {
+                    if (detached) {
+                        this.#removeNodesFrom(container);
+                    } else {
+                        this.#insertNodesInto(container, this.#getInsertionAnchor());
+                    }
+                }
+            }
+        }
+        return this;
+    }
+
     insertBefore(child: Component, before: Component | null = null): Component<N> {
         if (child === this) {
             throw new Error('cannot attach component to itself');
@@ -321,15 +340,9 @@ class Component<N extends Node | null = Node | null> {
             this.#addUpdateListenerCount(child.#updateListenerCount);
         }
         
-        const container = this.#container;
+        const container = this.#getChildContainerNode();
         if (container) {
-            const referenceNode = (before ? before.#getFirstNodeGoingForward() : child.#getLastNodeGoingBackward(false)?.nextSibling) ?? null;
-            if (!child.node) {
-                child.#setChildContainerNode(container);
-            }
-            child.#forEachNode((node) => {
-                container.insertBefore(node, referenceNode);
-            });
+            child.#insertNodesInto(container, child.#getInsertionAnchor());
         }
 
         if (child.#suspenseCount && !child.#suspenseHandler) {
@@ -347,6 +360,7 @@ class Component<N extends Node | null = Node | null> {
             child.#unhandledError = undefined;
             this.injectError(e);
         }
+
         return this;
     }
 
@@ -373,14 +387,11 @@ class Component<N extends Node | null = Node | null> {
             this.#addUpdateListenerCount(-child.#updateListenerCount);
         }
         
-        const container = this.#container;
-        if (container) {
-            if (!child.#node) {
-                child.#setChildContainerNode(null);
+        if (!this.#detached) {
+            const container = this.#getChildContainerNode();
+            if (container) {
+                child.#removeNodesFrom(container);
             }
-            child.#forEachNode((node) => {
-                container.removeChild(node);
-            });
         }
 
         if (child.#suspenseCount && !child.#suspenseHandler) {
@@ -391,17 +402,16 @@ class Component<N extends Node | null = Node | null> {
         if (child.#mounted) {
             child.#unmount();
         }
+        
         return this;
     }
 
     appendChild(child: Component): Component<N> {
-        this.insertBefore(child);
-        return this;
+        return this.insertBefore(child);
     }
 
     insertAfter(child: Component, reference: Component | null): Component<N> {
-        this.insertBefore(child, reference?.nextSibling ?? null);
-        return this;
+        return this.insertBefore(child, reference?.nextSibling ?? null);
     }
 
     replaceChild(replacement: Component, replaced: Component): Component<N> {
@@ -426,7 +436,7 @@ class Component<N extends Node | null = Node | null> {
     }
 
     replaceChildren(children: Component[]): Component<N> {
-        const operations = calcLevenshteinOperations(this.getChildren(), children);
+        const operations = calcLevenshteinOperations(this.children, children);
         for (const op of operations) {
             switch (op.type) {
             case 'replace': this.replaceChild(op.newValue, op.oldValue); break;
@@ -437,7 +447,7 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    getChildren(): Component[] {
+    get children(): Component[] {
         const children: Component[] = [];
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
             children.push(c);
@@ -543,26 +553,66 @@ class Component<N extends Node | null = Node | null> {
         });
     }
 
-    #setChildContainerNode(node: Node | null): void {
-        this.#container = node;
+    #getChildContainerNode(): Node | null {
+        if (this.#node) {
+            return this.#node;
+        }
+        let p: Component | null = this.#parent;
+        for (; p; p = p.#parent) {
+            if (p.#node) {
+                return p.#node;
+            }
+            if (p.#detached) {
+                break;
+            }
+        }
+        return null;
+    }
+
+    #getInsertionAnchor(): Node | null {
+        return (this.#nextSibling ? this.#nextSibling.#getFirstNodeGoingForward() : this.#getLastNodeGoingBackward(false)?.nextSibling) ?? null;
+    }
+
+    #insertNodesInto(container: Node, beforeNode: Node | null): void {
+        if (this.#detached) {
+            return;
+        }
+        const node = this.#node;
+        if (node) {
+            if (!node.parentNode) {
+                container.insertBefore(node, beforeNode);
+            } else if (node.parentNode !== container) {
+                throw new Error('unexpected parent node');
+            }
+            return;
+        }
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            if (!c.#node) {
-                c.#setChildContainerNode(node);
+            c.#insertNodesInto(container, beforeNode);
+        }
+    }
+
+    #removeNodesFrom(container: Node): void {
+        const node = this.#node;
+        if (node) {
+            if (node.parentNode) {
+                if (node.parentNode !== container) {
+                    throw new Error('unexpected parent node');
+                }
+                container.removeChild(node);
+            }
+            return;
+        }
+        for (let c = this.#firstChild; c; c = c.#nextSibling) {
+            if (!c.#detached) {
+                c.#removeNodesFrom(container);
             }
         }
     }
 
-    #forEachNode(handler: (node: Node) => void): void {
-        if (this.#node) {
-            handler(this.#node);
-            return;
-        }
-        for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            c.#forEachNode(handler);
-        }
-    }
-
     #getFirstNode(): Node | null {
+        if (this.#detached) {
+            return null;
+        }
         if (this.#node) {
             return this.#node;
         }
@@ -576,6 +626,9 @@ class Component<N extends Node | null = Node | null> {
     }
 
     #getLastNode(): Node | null {
+        if (this.#detached) {
+            return null;
+        }
         if (this.#node) {
             return this.#node;
         }
@@ -843,7 +896,10 @@ function DynamicText(value: Value<Primitive>): Component<Text> {
 }
 
 
-function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component | Component[] {
+function With<T>(value: T, mapper: (v: T) => FragmentItem, name?: string): Component[];
+function With<T>(value: DynamicValue<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null>;
+function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null> | Component[];
+function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null> | Component[] {
     if (isConstValue(value)) {
         return flattenFragment(mapper(value));
     }
@@ -853,20 +909,34 @@ function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string)
     });
     return component;
 }
+const foo = With(1, (_) => 'foo');
 
-
-function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component | Component[] {
+function If(condValue: boolean, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component[];
+function If(condValue: DynamicValue<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null>;
+function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> | Component[];
+function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> | Component[] {
     return With(condValue, (cond) => cond ? thenFragment : elseFragment, 'If');
 }
-function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component | Component[] {
+
+function When(condValue: boolean, ...bodyFragment: FragmentItem[]): Component[];
+function When(condValue: DynamicValue<boolean>, ...bodyFragment: FragmentItem[]): Component<null>;
+function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[];
+function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[] {
     return With(condValue, (cond) => cond ? bodyFragment : null, 'When');
 }
-function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component | Component[] {
+
+function Unless(condValue: boolean, ...bodyFragment: FragmentItem[]): Component[];
+function Unless(condValue: DynamicValue<boolean>, ...bodyFragment: FragmentItem[]): Component<null>;
+function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[];
+function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[] {
     return With(condValue, (cond) => cond ? null : bodyFragment, 'Unless');
 }
 
 
-function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component | Component[] {
+function Match<T extends Primitive>(value: T, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component[];
+function Match<T extends Primitive>(value: DynamicValue<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null>;
+function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null> | Component[];
+function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null> | Component[] {
     return With(value, (v: T) => {
         for (const [matcher, ...fragment] of cases) {
             if (typeof matcher === 'function' ? matcher(v) : v === matcher) {
@@ -881,7 +951,10 @@ function Else<T>(_: T): true {
 }
 
 
-function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component | Component[] {
+function For<T>(itemsValue: T[], renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component[];
+function For<T>(itemsValue: DynamicValue<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null>;
+function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> | Component[];
+function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> | Component[] {
     if (isConstValue(itemsValue)) {
         return flattenFragment(itemsValue.map(renderFunc));
     }
@@ -928,7 +1001,10 @@ function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, k
 }
 
 
-function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component | Component[] {
+function Repeat(countValue: number, itemFunc: (i: number) => FragmentItem): Component[];
+function Repeat(countValue: DynamicValue<number>, itemFunc: (i: number) => FragmentItem): Component<null>;
+function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component<null> | Component[];
+function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component<null> | Component[] {
     if (isConstValue(countValue)) {
         const fragment: FragmentItem[] = [];
         for (let i = 0; i < countValue; ++i) {
@@ -957,7 +1033,7 @@ function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem
 }
 
 
-function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentItem, body: () => FragmentItem): Component {
+function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentItem, body: () => FragmentItem): Component<null> {
     const component = new Component(null, 'ErrorBoundary').setErrorHandler(onError);
     initContent();
     return component;
@@ -982,23 +1058,21 @@ function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentIt
 }
 
 
-function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: FragmentItem[]): Component {
-    const fallback = flattenFragment(fallbackFragment);
+function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: FragmentItem[]): Component<null> {
+    const fallback = new Component(null, 'SuspenseFallback').appendFragment(fallbackFragment);
     const body = new Component(null, 'SuspenseBody').appendFragment(bodyFragment);
     const component = new Component(null, 'Suspense');
-    let state: 'body' | 'fallback' | undefined;
+    component.appendChild(body);
     body.setSuspenseHandler((count) => {
         if (count > 0) {
-            if (state !== 'fallback') {
-                state = 'fallback';
-                component.clear();
-                component.appendChildren(fallback);
+            if (!body.isDetached) {
+                body.setDetached(true);
+                component.appendChild(fallback);
             }
         } else {
-            if (state !== 'body') {
-                state = 'body';
-                component.clear();
-                component.appendChild(body);
+            if (body.isDetached) {
+                component.removeChild(fallback);
+                body.setDetached(false);
             }
         }
     });
@@ -1006,7 +1080,7 @@ function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: FragmentItem[
 }
 
 
-function Lazy(bodyThunk: () => FragmentItem | Promise<FragmentItem>): Component {
+function Lazy(bodyThunk: () => FragmentItem | Promise<FragmentItem>): Component<null> {
     const component = new Component(null, 'Lazy');
     let loaded = false;
     component.addMountListener(() => {
