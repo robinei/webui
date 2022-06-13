@@ -363,6 +363,10 @@ class Component<N extends Node | null = Node | null> {
             throw new Error('component already mounted');
         }
 
+        if (this.#mounted) {
+            child.mount();
+        }
+
         if (before) {
             if (before.#parent !== this) {
                 throw new Error('reference component not child of this component');
@@ -399,10 +403,6 @@ class Component<N extends Node | null = Node | null> {
             // component doesn't contribute to our count when it has a handler.
             // use pre-mount count because if mount changed the count then that diff will already have been added here
             this.#addSuspenseCount(child.#suspenseCount);
-        }
-
-        if (this.#mounted) {
-            child.mount();
         }
 
         if (child.#unhandledError !== undefined) {
