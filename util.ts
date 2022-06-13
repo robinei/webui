@@ -19,7 +19,7 @@ export function errorDescription(e: unknown): string {
 }
 
 
-export function lazy<T>(func: () => T): () => T {
+export function memoizeThunk<T>(func: () => T): () => T {
     let hasValue = false;
     let value: T;
     return () => {

@@ -1,10 +1,66 @@
 import { calcLevenshteinOperations, toError, WritableKeys, errorDescription, asyncDelay } from './util';
 
-type Primitive = null | undefined | string | number | boolean;
+// used as a private "missing" placeholder, that outside code can't manufacture
+const NIL: unique symbol = Symbol();
+type NIL = typeof NIL;
 
-type DynamicValue<T> = Promise<T> | (() => T | Promise<T>);
+
 
 type Value<T> = T | DynamicValue<T>;
+type DynamicValue<T> = Promise<T> | (() => ValueFuncResult<T>);
+type ValueFuncResult<T> = T | Promise<T> | Loading;
+export type Loading = typeof Loading;
+export const Loading: unique symbol = Symbol();
+
+export function isStaticValue<T>(value: Value<T>): value is T {
+    return typeof value !== 'function' && !(value instanceof Promise);
+}
+
+export function mapValue<T, R>(value: Value<T>, mapper: (v: T) => R): Value<R> {
+    if (isStaticValue(value)) {
+        return mapper(value);
+    }
+    if (value instanceof Promise) {
+        return value.then(mapper);
+    }
+    let lastInput: ValueFuncResult<T> | NIL = NIL;
+    let lastOutput: ValueFuncResult<R>;
+    return function valueMapper() {
+        const v = value();
+        if (v === lastInput) {
+            return lastOutput;
+        }
+        lastInput = v;
+        if (v === Loading) {
+            lastOutput = v;
+        } else if (v instanceof Promise) {
+            lastOutput = v.then(mapper);
+        } else {
+            lastOutput = mapper(v);
+        }
+        return lastOutput;
+    };
+}
+
+
+
+type Primitive = null | undefined | string | number | boolean;
+
+function isPrimitive(value: unknown): value is Primitive {
+    if (value === null) {
+        return true;
+    }
+    switch (typeof value) {
+    case 'string':
+    case 'number':
+    case 'boolean':
+    case 'undefined':
+        return true;
+    }
+    return false;
+}
+
+
 
 type FragmentItem = Value<Primitive> | Component | FragmentItem[];
 
@@ -44,8 +100,6 @@ type RewriteThisParameter<F> =
     F extends (this: infer _, ...args: infer Args) => infer Ret ? (this: Component, ...args: Args) => Ret :
     F extends (...args: infer Args) => infer Ret ? (this: Component, ...args: Args) => Ret : never;
 
-
-export const NULL: unique symbol = Symbol();
 
 
 class Component<N extends Node | null = Node | null> {
@@ -175,10 +229,9 @@ class Component<N extends Node | null = Node | null> {
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck: boolean = true): Component<N> {
         const self = this;
         const boundWatcher = watcher.bind(self);
-        let lastEmittedValue: T;
-        let hasEmittedValue = false;
+        let lastEmittedValue: T | NIL = NIL;
 
-        if (isConstValue(value)) {
+        if (isStaticValue(value)) {
             onValueChanged(value);
             return self;
         }
@@ -192,13 +245,23 @@ class Component<N extends Node | null = Node | null> {
         }
 
         const valueFunc = value;
-        let lastVal: unknown = NULL;
+        let lastVal: ValueFuncResult<T> | NIL = NIL;
         self.addUpdateListener(function checkIfValueChanged(): void {
             const newVal = valueFunc();
             if (equalCheck && newVal === lastVal) {
                 return; // early check and return (do less in common case of no change)
             }
             if (!(newVal instanceof Promise)) {
+                if (newVal === Loading) {
+                    if (lastVal !== Loading) {
+                        self.#addSuspenseCount(1);
+                        lastVal = newVal;
+                    }
+                    return;
+                }
+                if (lastVal === Loading) {
+                    self.#addSuspenseCount(-1);
+                }
                 lastVal = newVal;
                 onValueChanged(newVal);
                 return;
@@ -217,9 +280,8 @@ class Component<N extends Node | null = Node | null> {
 
         function onValueChanged(v: T): void {
             try {
-                if (!equalCheck || !hasEmittedValue || lastEmittedValue !== v) {
+                if (!equalCheck || lastEmittedValue !== v) {
                     lastEmittedValue = v;
-                    hasEmittedValue = true;
                     boundWatcher(v);
                 }
             } catch (e) {
@@ -738,27 +800,6 @@ let touchedComponents = 0;
 
 
 
-
-
-function isConstValue<T>(value: Value<T>): value is T {
-    return typeof value !== 'function' && !(value instanceof Promise);
-}
-
-function isPrimitive(value: unknown): value is Primitive {
-    if (value === null) {
-        return true;
-    }
-    switch (typeof value) {
-    case 'string':
-    case 'number':
-    case 'boolean':
-    case 'undefined':
-        return true;
-    }
-    return false;
-}
-
-
 function setElementAttribute(elem: Element, name: string, value: Primitive): void {
     if (name in elem) {
         (elem as any)[name] = value;
@@ -836,7 +877,7 @@ function iterateFragment(fragment: FragmentItem, handler: (component: Component)
                 next(item);
             }
         } else {
-            if (isConstValue(fragment)) {
+            if (isStaticValue(fragment)) {
                 lastText += fragment?.toString() ?? '';
             } else {
                 if (lastText) {
@@ -893,7 +934,7 @@ function With<T>(value: T, mapper: (v: T) => FragmentItem, name?: string): Compo
 function With<T>(value: DynamicValue<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null>;
 function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null> | Component[];
 function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null> | Component[] {
-    if (isConstValue(value)) {
+    if (isStaticValue(value)) {
         return flattenFragment(mapper(value));
     }
     const component = new Component(null, name ?? 'With');
@@ -948,7 +989,7 @@ function For<T>(itemsValue: T[], renderFunc: (item: T) => FragmentItem, keyFunc?
 function For<T>(itemsValue: DynamicValue<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null>;
 function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> | Component[];
 function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> | Component[] {
-    if (isConstValue(itemsValue)) {
+    if (isStaticValue(itemsValue)) {
         return flattenFragment(itemsValue.map(renderFunc));
     }
 
@@ -998,7 +1039,7 @@ function Repeat(countValue: number, itemFunc: (i: number) => FragmentItem): Comp
 function Repeat(countValue: DynamicValue<number>, itemFunc: (i: number) => FragmentItem): Component<null>;
 function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component<null> | Component[];
 function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component<null> | Component[] {
-    if (isConstValue(countValue)) {
+    if (isStaticValue(countValue)) {
         const fragment: FragmentItem[] = [];
         for (let i = 0; i < countValue; ++i) {
             fragment.push(itemFunc(i));
@@ -1026,13 +1067,18 @@ function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem
 }
 
 
-function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentItem, body: () => FragmentItem): Component<null> {
+function ErrorBoundary(
+    fallbackThunk: (this: Component<null>, error: Error, reset: () => void) => FragmentItem,
+    bodyThunk: (this: Component<null>) => FragmentItem
+): Component<null> {
     const component = new Component(null, 'ErrorBoundary').setErrorHandler(onError);
+    const boundFallbackThunk = fallbackThunk.bind(component);
+    const boundBodyThunk = bodyThunk.bind(component);
     initContent();
     return component;
 
     function onError(error: unknown): boolean {
-        const fragment = flattenFragment(fallback(toError(error), initContent));
+        const fragment = flattenFragment(boundFallbackThunk(toError(error), initContent));
         component.clear();
         component.appendChildren(fragment);
         console.error(`Error caught by ErrorBoundary: ${errorDescription(error)}`);
@@ -1041,7 +1087,7 @@ function ErrorBoundary(fallback: (error: Error, reset: () => void) => FragmentIt
 
     function initContent(): void {
         try {
-            const fragment = flattenFragment(body());
+            const fragment = flattenFragment(boundBodyThunk());
             component.clear();
             component.appendChildren(fragment);
         } catch (e) {
@@ -1073,15 +1119,16 @@ function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: FragmentItem[
 }
 
 
-function Lazy(bodyThunk: () => FragmentItem | Promise<FragmentItem>): Component<null> {
+function Lazy(bodyThunk: (this: Component<null>) => FragmentItem | Promise<FragmentItem>): Component<null> {
     const component = new Component(null, 'Lazy');
+    const boundBodyThunk = bodyThunk.bind(component);
     let loaded = false;
     component.addMountListener(() => {
         if (loaded) {
             return;
         }
         loaded = true;
-        const bodyResult = bodyThunk();
+        const bodyResult = boundBodyThunk();
         if (!(bodyResult instanceof Promise)) {
             component.appendFragment(bodyResult);
             return;
@@ -1197,7 +1244,8 @@ function TodoListView(model: TodoListModel) {
 
 
 function TestComponent() {
-    return ErrorBoundary(ErrorFallback, () => {
+    return ErrorBoundary(ErrorFallback, function () {
+        const errorBoundary = this;
         const [cb1, checked1] = CheckBox();
         const [cb2, checked2] = CheckBox();
         const [cb3, checked3] = CheckBox();
@@ -1206,7 +1254,11 @@ function TestComponent() {
         const asyncTrue = asyncDelay(500).then(() => true);
 
         let width = 15;
-        let height = 10;
+        let height: number | Loading = Loading;
+        asyncDelay(600).then(() => {
+            height = 10;
+            errorBoundary.update();
+        });
 
         return Suspense('Loading...', When(asyncTrue,
             cb1, H('br'),
@@ -1233,8 +1285,8 @@ function TestComponent() {
                 return ['Loaded 2', H('br')];
             }),
             
-            'Width: ', Slider(width, 1, 20, (w) => { width = w; }), H('br'),
-            'Height: ', Slider(height, 1, 20, (h) => { height = h; }), H('br'),
+            'Width: ', Slider(() => width, 1, 20, (w) => { width = w; }), H('br'),
+            'Height: ', Slider(() => height, 1, 20, (h) => { height = h; }), H('br'),
             H('table', null,
                 Repeat(() => height, (y) =>
                     H('tr', null,
@@ -1242,12 +1294,12 @@ function TestComponent() {
                             H('td', null, [((x+1)*(y+1)).toString(), ' | ']))))),
         ));
 
-        function Slider(initialValue: number, min: number, max: number, callback: (v: number) => void) {
+        function Slider(value: Value<number>, min: number, max: number, callback: (v: number) => void) {
             return H('input', {
                 type: 'range',
                 min: min.toString(),
                 max: max.toString(),
-                value: initialValue.toString(),
+                value: mapValue(value, (v) => v.toString()),
                 oninput(ev: Event) {
                     callback((ev.target as any).value);
                 }
@@ -1255,7 +1307,7 @@ function TestComponent() {
         }
 
         function CheckBox() {
-            const cb = H('input', { type: 'checkbox', onchange: () => { /* empty handler still triggers update */ } });
+            const cb = H('input', { type: 'checkbox', onchange: () => { /* empty event handler still triggers update */ } });
             return [cb, () => cb.node.checked] as const;
         }
     });
