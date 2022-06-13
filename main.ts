@@ -1,4 +1,4 @@
-import { ThinVec, tvPush, tvForEach, tvEmpty, calcLevenshteinOperations, toError, WritableKeys, errorDescription, asyncDelay, tvRemove } from './util';
+import { calcLevenshteinOperations, toError, WritableKeys, errorDescription, asyncDelay } from './util';
 
 type Primitive = null | undefined | string | number | boolean;
 
@@ -60,9 +60,9 @@ class Component<N extends Node | null = Node | null> {
     #prevSibling: Component | null = null;
 
     #mounted = false;
-    #mountListeners: ThinVec<() => void> = tvEmpty;
-    #unmountListeners: ThinVec<() => void> = tvEmpty;
-    #updateListeners: ThinVec<() => void | false> = tvEmpty;
+    #mountListeners: (() => void)[] | undefined;
+    #unmountListeners: (() => void)[] | undefined;
+    #updateListeners: (() => void | false)[] | undefined;
     #updateListenerCount = 0; // count for subtree
 
     #errorHandler: ((error: unknown) => boolean) | undefined;
@@ -120,67 +120,113 @@ class Component<N extends Node | null = Node | null> {
 
     addMountListener(listener: (this: Component<N>) => void): Component<N> {
         const boundListener = listener.bind(this);
-        const wrappedListener = () => {
+        if (this.#mountListeners) {
+            this.#mountListeners.push(boundListener);
+        } else {
+            this.#mountListeners = [boundListener];
+        }
+        if (this.#mounted) {
             try {
                 boundListener();
             } catch (e) {
                 this.injectError(e);
             }
-        };
-        this.#mountListeners = tvPush(this.#mountListeners, wrappedListener);
-        if (this.#mounted) {
-            wrappedListener();
         }
         return this;
     }
 
     addUnmountListener(listener: (this: Component<N>) => void): Component<N> {
-        const boundListener = listener.bind(this);
-        this.#unmountListeners = tvPush(this.#unmountListeners, () => {
-            try {
-                boundListener();
-            } catch (e) {
-                this.injectError(e);
-            }
-        });
+        if (this.#unmountListeners) {
+            this.#unmountListeners.push(listener.bind(this));
+        } else {
+            this.#unmountListeners = [listener.bind(this)];
+        }
         return this;
     }
 
     addUpdateListener(listener: (this: Component<N>) => void | false): Component<N> {
-        const boundListener = listener.bind(this);
-        this.#updateListeners = tvPush(this.#updateListeners, () => {
-            try {
-                boundListener();
-            } catch (e) {
-                this.injectError(e);
-            }
-        });
+        if (this.#updateListeners) {
+            this.#updateListeners.push(listener.bind(this));
+        } else {
+            this.#updateListeners = [listener.bind(this)];
+        }
         this.#addUpdateListenerCount(1);
         return this;
     }
 
     addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: Component<N>, ev: GlobalEventHandlersEventMap[K]) => any): Component<N> {
-        if (!this.#node) {
+        const self = this;
+        if (!self.#node) {
             throw new Error('addEventListener called on node-less component');
         }
-        const boundListener = listener.bind(this);
-        this.#node.addEventListener(type, (ev: any) => {
+        const boundListener = listener.bind(self);
+        self.#node.addEventListener(type, function listenerInvoker(ev: any): void {
             try {
                 boundListener(ev);
             } catch (e) {
-                this.injectError(e);
+                self.injectError(e);
                 return;
             }
-            this.#updateRoot();
+            self.#updateRoot();
         });
         return this;
     }
 
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck: boolean = true): Component<N> {
-        const boundWatcher = watcher.bind(this);
+        const self = this;
+        const boundWatcher = watcher.bind(self);
         let lastEmittedValue: T;
         let hasEmittedValue = false;
-        const wrappedWatcher = (v: T) => {
+
+        if (isConstValue(value)) {
+            onValueChanged(value);
+            return self;
+        }
+        
+        if (value instanceof Promise) {
+            self.trackAsyncLoad(async function performePromiseLoad() {
+                const v = await value;
+                onValueChanged(v);
+            });
+            return self;
+        }
+
+        if (isProp<T>(value)) {
+            self.addMountListener(function mountPropListener() {
+                value.addChangeListener(boundWatcher);
+                boundWatcher(value());
+            });
+            self.addUnmountListener(function unmountPropListener() {
+                value.removeChangeListener(boundWatcher);
+            });
+            return self;
+        }
+
+        const valueFunc = value;
+        let lastVal: unknown = NULL;
+        self.addUpdateListener(function checkIfValueChanged(): void {
+            const newVal = valueFunc();
+            if (equalCheck && newVal === lastVal) {
+                return; // early check and return (do less in common case of no change)
+            }
+            if (!(newVal instanceof Promise)) {
+                lastVal = newVal;
+                onValueChanged(newVal);
+                return;
+            }
+            if (newVal === lastVal) {
+                return; // don't listen to same Promise (even if equalCheck is false)
+            }
+            lastVal = newVal;
+            self.trackAsyncLoad(async function performePromiseLoad() {
+                const v = await newVal;
+                if (newVal === lastVal) {
+                    onValueChanged(v);
+                }
+            });
+        });
+
+        function onValueChanged(v: T): void {
             try {
                 if (!equalCheck || !hasEmittedValue || lastEmittedValue !== v) {
                     lastEmittedValue = v;
@@ -188,58 +234,11 @@ class Component<N extends Node | null = Node | null> {
                     boundWatcher(v);
                 }
             } catch (e) {
-                this.injectError(e);
+                self.injectError(e);
             }
-        };
-
-        if (isConstValue(value)) {
-            wrappedWatcher(value);
-            return this;
-        }
-        
-        if (value instanceof Promise) {
-            this.trackAsyncLoad(async () => {
-                const v = await value;
-                wrappedWatcher(v);
-            });
-            return this;
         }
 
-        if (isProp<T>(value)) {
-            this.addMountListener(() => {
-                value.addChangeListener(boundWatcher);
-                boundWatcher(value());
-            });
-            this.addUnmountListener(() => {
-                value.removeChangeListener(boundWatcher);
-            });
-            return this;
-        }
-
-        let lastVal: unknown = NULL;
-        this.addUpdateListener(() => {
-            const newVal = value();
-            if (equalCheck && newVal === lastVal) {
-                return; // early check and return (do less in common case of no change)
-            }
-            if (!(newVal instanceof Promise)) {
-                lastVal = newVal;
-                wrappedWatcher(newVal);
-                return;
-            }
-            if (newVal === lastVal) {
-                return; // don't listen to same Promise (even if equalCheck is false)
-            }
-            lastVal = newVal;
-            this.trackAsyncLoad(async () => {
-                const v = await newVal;
-                if (newVal === lastVal) {
-                    wrappedWatcher(v);
-                }
-            });
-        });
-
-        return this;
+        return self;
     }
 
     setAttributes(attributes: Attributes<N> | null): Component<N> {
@@ -268,7 +267,7 @@ class Component<N extends Node | null = Node | null> {
                 const elem = this.#node;
                 const styles = value as Styles;
                 for (const styleName in styles) {
-                    this.addValueWatcher(styles[styleName]!, (primitive) => {
+                    this.addValueWatcher(styles[styleName]!, function onStyleChanged(primitive) {
                         elem.style[styleName] = primitive;
                     });
                 }
@@ -277,7 +276,7 @@ class Component<N extends Node | null = Node | null> {
                     throw new Error('attribute requires node to be Element');
                 }
                 const elem = this.#node;
-                this.addValueWatcher(value, (primitive) => {
+                this.addValueWatcher(value, function onAttributeChanged(primitive) {
                     setElementAttribute(elem, name, primitive);
                 });
             }
@@ -466,38 +465,6 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    mount(): Component<N> {
-        this.#mount();
-        this.update();
-        return this;
-    }
-
-    update(): Component<N> {
-        if (!this.#mounted) {
-            return this;
-        }
-        ++touchedComponents;
-        let skipSubtree = false;
-        tvForEach(this.#updateListeners, (listener) => {
-            updaterCount += 1;
-            if (listener() === false) {
-                skipSubtree = true;
-            }
-            return this.#mounted;
-        });
-        if (!skipSubtree) {
-            for (let c = this.#firstChild; c; c = c.#nextSibling) {
-                if (c.#updateListenerCount > 0) {
-                    if (!this.#mounted) {
-                        return this;
-                    }
-                    c.update();
-                }
-            }
-        }
-        return this;
-    }
-
     injectError(error: unknown): void {
         const root = this.root;
         let handled = false;
@@ -519,38 +486,104 @@ class Component<N extends Node | null = Node | null> {
         root.#updateRoot();
     }
 
-    #mount(): void {
-        if (this.#mounted) {
-            return;
-        }
-        this.#mounted = true;
-        for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            c.#mount();
-            if (!this.#mounted) {
-                return; // in case a mount handler caused the tree to be (synchronously) unmounted
+    mount(): Component<N> {
+        this.#mount();
+        this.update();
+        return this;
+    }
+
+    update(): Component<N> {
+        const stack: Component[] = [this];
+        for (;;) {
+            const component = stack.pop();
+            if (!component) {
+                break;
+            }
+            if (!component.#mounted) {
+                break;
+            }
+            ++touchedComponents;
+            if (component.#updateListeners) {
+                let skipSubtree = false;
+                for (const listener of component.#updateListeners) {
+                    updaterCount += 1;
+                    try {
+                        if (listener() === false) {
+                            skipSubtree = true;
+                        }
+                    } catch (e) {
+                        component.injectError(e);
+                    }
+                }
+                if (skipSubtree) {
+                    continue;
+                }
+            }
+            for (let c = component.#firstChild; c; c = c.#nextSibling) {
+                if (c.#updateListenerCount > 0) {
+                    stack.push(c);
+                }
             }
         }
-        tvForEach(this.#mountListeners, (listener) => {
-            listener();
-            return this.#mounted;
-        });
+        return this;
+    }
+
+    #mount(): void {
+        const stack: Component[] = [this];
+        for (;;) {
+            const component = stack.pop();
+            if (!component) {
+                break;
+            }
+            if (component.#mounted) {
+                break;
+            }
+            component.#mounted = true;
+            if (component.#mountListeners) {
+                for (const listener of component.#mountListeners) {
+                    try {
+                        listener();
+                    } catch (e) {
+                        component.injectError(e);
+                    }
+                    if (!component.#mounted) {
+                        return; // in case a mount handler caused the tree to be (synchronously) unmounted
+                    }
+                }
+            }
+            for (let c = component.#firstChild; c; c = c.#nextSibling) {
+                stack.push(c);
+            }
+        }
     }
 
     #unmount(): void {
-        if (!this.#mounted) {
-            return;
-        }
-        this.#mounted = false;
-        for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            c.#unmount();
-            if (this.#mounted) {
-                return; // in case an unmount handler caused the tree to be (synchronously) mounted
+        const stack: Component[] = [this];
+        for (;;) {
+            const component = stack.pop();
+            if (!component) {
+                break;
+            }
+            if (!component.#mounted) {
+                break;
+            }
+            component.#mounted = false;
+            if (component.#unmountListeners) {
+                for (const listener of component.#unmountListeners) {
+                    try {
+                        listener();
+                    } catch (e) {
+                        component.injectError(e);
+                    }
+                    if (component.#mounted) {
+                        return; // in case an unmount handler caused the tree to be (synchronously) mounted
+                    }
+                }
+            }
+            for (let c = component.#firstChild; c; c = c.#nextSibling) {
+                stack.push(c);
             }
         }
-        tvForEach(this.#unmountListeners, (listener) => {
-            listener();
-            return !this.#mounted;
-        });
     }
 
     #getChildContainerNode(): Node | null {
@@ -725,19 +758,32 @@ interface Prop<T> {
     removeChangeListener(listener: (value: T) => void): void;
 }
 function makeProp<T>(value: T): Prop<T> {
-    let listeners: ThinVec<(value: T) => void> = tvEmpty;
+    let listeners: ((value: T) => void)[] | undefined;
     return Object.assign(() => value, {
         set(newValue: T): void {
             if (value !== newValue) {
                 value = newValue;
-                tvForEach(listeners, (listener) => listener(value));
+                if (listeners) {
+                    for (const listener of listeners) {
+                        listener(value);
+                    }
+                }
             }
         },
         addChangeListener(listener: (value: T) => void): void {
-            listeners = tvPush(listeners, listener);
+            if (listeners) {
+                listeners.push(listener);
+            } else {
+                listeners = [listener];
+            }
         },
         removeChangeListener(listener: (value: T) => void): void {
-            listeners = tvRemove(listeners, listener);
+            if (listeners) {
+                const i = listeners.indexOf(listener);
+                if (i >= 0) {
+                    listeners.splice(i, 1);
+                }
+            }
         },
     } as const);
 }
@@ -890,7 +936,7 @@ function StaticText(value: string): Component<Text> {
 
 function DynamicText(value: Value<Primitive>): Component<Text> {
     const node = document.createTextNode('');
-    return new Component(node).addValueWatcher(value, (primitive) => {
+    return new Component(node).addValueWatcher(value, function onTextChanged(primitive) {
         node.nodeValue = primitive?.toString() ?? '';
     });
 }
@@ -904,7 +950,7 @@ function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string)
         return flattenFragment(mapper(value));
     }
     const component = new Component(null, name ?? 'With');
-    component.addValueWatcher(value, (v) => {
+    component.addValueWatcher(value, function evalWith(v) {
         component.replaceChildren(flattenFragment(mapper(v)));
     });
     return component;
@@ -915,21 +961,21 @@ function If(condValue: boolean, thenFragment: FragmentItem, elseFragment?: Fragm
 function If(condValue: DynamicValue<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null>;
 function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> | Component[];
 function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> | Component[] {
-    return With(condValue, (cond) => cond ? thenFragment : elseFragment, 'If');
+    return With(condValue, function evalIf(cond) { return cond ? thenFragment : elseFragment; }, 'If');
 }
 
 function When(condValue: boolean, ...bodyFragment: FragmentItem[]): Component[];
 function When(condValue: DynamicValue<boolean>, ...bodyFragment: FragmentItem[]): Component<null>;
 function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[];
 function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[] {
-    return With(condValue, (cond) => cond ? bodyFragment : null, 'When');
+    return With(condValue, function evelWhen(cond) { return cond ? bodyFragment : null; }, 'When');
 }
 
 function Unless(condValue: boolean, ...bodyFragment: FragmentItem[]): Component[];
 function Unless(condValue: DynamicValue<boolean>, ...bodyFragment: FragmentItem[]): Component<null>;
 function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[];
 function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[] {
-    return With(condValue, (cond) => cond ? null : bodyFragment, 'Unless');
+    return With(condValue, function evalUnless(cond) { return cond ? null : bodyFragment; }, 'Unless');
 }
 
 
@@ -937,7 +983,7 @@ function Match<T extends Primitive>(value: T, ...cases: [T | ((v: T) => boolean)
 function Match<T extends Primitive>(value: DynamicValue<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null>;
 function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null> | Component[];
 function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null> | Component[] {
-    return With(value, (v: T) => {
+    return With(value, function evalMatch(v: T) {
         for (const [matcher, ...fragment] of cases) {
             if (typeof matcher === 'function' ? matcher(v) : v === matcher) {
                 return fragment;
@@ -963,7 +1009,7 @@ function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, k
     let map = new Map<unknown, Component[]>();
 
     const component = new Component(null, 'For');
-    component.addValueWatcher(itemsValue, (items) => {
+    component.addValueWatcher(itemsValue, function checkItems(items) {
         if (areChildrenEqual(items)) {
             return;
         }
@@ -1015,7 +1061,7 @@ function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem
     
     let fragmentSizes: number[] = [];
     const component = new Component(null, 'Repeat');
-    component.addValueWatcher(countValue, (count) => {
+    component.addValueWatcher(countValue, function onCountChanged(count) {
         while (fragmentSizes.length > count && fragmentSizes.length > 0) {
             const fragmentSize = fragmentSizes.pop()!;
             for (let i = 0; i < fragmentSize; ++i) {
@@ -1093,7 +1139,7 @@ function Lazy(bodyThunk: () => FragmentItem | Promise<FragmentItem>): Component<
             component.appendFragment(bodyResult);
             return;
         }
-        component.trackAsyncLoad(async () => {
+        component.trackAsyncLoad(async function loadLazyBody() {
             const loadedBody = await bodyResult;
             component.appendFragment(loadedBody);
         });
