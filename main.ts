@@ -2,7 +2,7 @@ import { calcLevenshteinOperations, toError, WritableKeys, errorDescription, asy
 
 type Primitive = null | undefined | string | number | boolean;
 
-type DynamicValue<T> = Promise<T> | (() => T | Promise<T>) | Prop<T>;
+type DynamicValue<T> = Promise<T> | (() => T | Promise<T>);
 
 type Value<T> = T | DynamicValue<T>;
 
@@ -187,17 +187,6 @@ class Component<N extends Node | null = Node | null> {
             self.trackAsyncLoad(async function performePromiseLoad() {
                 const v = await value;
                 onValueChanged(v);
-            });
-            return self;
-        }
-
-        if (isProp<T>(value)) {
-            self.addMountListener(function mountPropListener() {
-                value.addChangeListener(boundWatcher);
-                boundWatcher(value());
-            });
-            self.addUnmountListener(function unmountPropListener() {
-                value.removeChangeListener(boundWatcher);
             });
             return self;
         }
@@ -751,48 +740,6 @@ let touchedComponents = 0;
 
 
 
-interface Prop<T> {
-    (): T;
-    set(newValue: T): void;
-    addChangeListener(listener: (value: T) => void): void;
-    removeChangeListener(listener: (value: T) => void): void;
-}
-function makeProp<T>(value: T): Prop<T> {
-    let listeners: ((value: T) => void)[] | undefined;
-    return Object.assign(() => value, {
-        set(newValue: T): void {
-            if (value !== newValue) {
-                value = newValue;
-                if (listeners) {
-                    for (const listener of listeners) {
-                        listener(value);
-                    }
-                }
-            }
-        },
-        addChangeListener(listener: (value: T) => void): void {
-            if (listeners) {
-                listeners.push(listener);
-            } else {
-                listeners = [listener];
-            }
-        },
-        removeChangeListener(listener: (value: T) => void): void {
-            if (listeners) {
-                const i = listeners.indexOf(listener);
-                if (i >= 0) {
-                    listeners.splice(i, 1);
-                }
-            }
-        },
-    } as const);
-}
-function isProp<T>(func: unknown): func is Prop<T> {
-    return typeof func === 'function' && !!((func as any).addChangeListener);
-}
-
-
-
 function isConstValue<T>(value: Value<T>): value is T {
     return typeof value !== 'function' && !(value instanceof Promise);
 }
@@ -1258,8 +1205,8 @@ function TestComponent() {
 
         const asyncTrue = asyncDelay(500).then(() => true);
 
-        let width = makeProp(15);
-        let height = makeProp(10);
+        let width = 15;
+        let height = 10;
 
         return Suspense('Loading...', When(asyncTrue,
             cb1, H('br'),
@@ -1286,19 +1233,25 @@ function TestComponent() {
                 return ['Loaded 2', H('br')];
             }),
             
-            'Width: ', Slider(width, 1, 20), H('br'),
-            'Height: ', Slider(height, 1, 20), H('br'),
+            'Width: ', Slider(width, 1, 20, (w) => { width = w; }), H('br'),
+            'Height: ', Slider(height, 1, 20, (h) => { height = h; }), H('br'),
             H('table', null,
-                Repeat(height, (y) =>
+                Repeat(() => height, (y) =>
                     H('tr', null,
-                        Repeat(width, (x) =>
+                        Repeat(() => width, (x) =>
                             H('td', null, [((x+1)*(y+1)).toString(), ' | ']))))),
         ));
 
-        function Slider(prop: Prop<number>, min: number, max: number) {
-            return H('input', { type: 'range', min: min.toString(), max: max.toString(), value: prop().toString(), oninput(ev: Event) {
-                prop.set((ev.target as any).value);
-            } });
+        function Slider(initialValue: number, min: number, max: number, callback: (v: number) => void) {
+            return H('input', {
+                type: 'range',
+                min: min.toString(),
+                max: max.toString(),
+                value: initialValue.toString(),
+                oninput(ev: Event) {
+                    callback((ev.target as any).value);
+                }
+            });
         }
 
         function CheckBox() {
