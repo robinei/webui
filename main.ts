@@ -7,7 +7,8 @@ type NIL = typeof NIL;
 
 
 type Value<T> = T | DynamicValue<T>;
-type DynamicValue<T> = Promise<T> | (() => ValueFuncResult<T>);
+type DynamicValue<T> = Promise<T> | ValueFunc<T>;
+type ValueFunc<T> = () => ValueFuncResult<T>;
 type ValueFuncResult<T> = T | Promise<T> | Loading;
 export type Loading = typeof Loading;
 export const Loading: unique symbol = Symbol();
@@ -152,12 +153,12 @@ class Component<N extends Node | null = Node | null> {
     }
 
     setSuspenseHandler(handler: (this: Component<N>, count: number) => void): Component<N> {
-        this.#suspenseHandler = handler.bind(this);
-        if (this.#suspenseCount && this.#parent) {
+        if (this.#suspenseCount && this.#parent && !this.#suspenseHandler) {
             // we don't contribute to parent count when we have a handler
             this.#parent.#addSuspenseCount(-this.#suspenseCount);
         }
-        this.#suspenseHandler(this.#suspenseCount);
+        this.#suspenseHandler = handler.bind(this);
+        this.#suspenseHandler(this.#suspenseCount); // always invoke (even with 0), so the handler can ensure things start out according to the current count
         return this;
     }
 
@@ -170,6 +171,24 @@ class Component<N extends Node | null = Node | null> {
         } finally {
             this.#addSuspenseCount(-1);
         }
+    }
+
+    addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: Component<N>, ev: GlobalEventHandlersEventMap[K]) => any): Component<N> {
+        const self = this;
+        if (!self.#node) {
+            throw new Error('addEventListener called on node-less component');
+        }
+        const boundListener = listener.bind(self);
+        self.#node.addEventListener(type, function listenerInvoker(ev: any): void {
+            try {
+                boundListener(ev);
+            } catch (e) {
+                self.injectError(e);
+                return;
+            }
+            self.#updateRoot();
+        });
+        return this;
     }
 
     addMountListener(listener: (this: Component<N>) => void): Component<N> {
@@ -205,24 +224,6 @@ class Component<N extends Node | null = Node | null> {
             this.#updateListeners = [listener.bind(this)];
         }
         this.#addUpdateListenerCount(1);
-        return this;
-    }
-
-    addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: Component<N>, ev: GlobalEventHandlersEventMap[K]) => any): Component<N> {
-        const self = this;
-        if (!self.#node) {
-            throw new Error('addEventListener called on node-less component');
-        }
-        const boundListener = listener.bind(self);
-        self.#node.addEventListener(type, function listenerInvoker(ev: any): void {
-            try {
-                boundListener(ev);
-            } catch (e) {
-                self.injectError(e);
-                return;
-            }
-            self.#updateRoot();
-        });
         return this;
     }
 
@@ -359,11 +360,8 @@ class Component<N extends Node | null = Node | null> {
         if (child.#parent) {
             throw new Error('component is already attached to a component');
         }
-        if (child.#mounted) {
-            throw new Error('component already mounted');
-        }
 
-        if (this.#mounted) {
+        if (this.#mounted && !child.#mounted) {
             child.mount();
         }
 
@@ -450,7 +448,7 @@ class Component<N extends Node | null = Node | null> {
         }
 
         if (child.#mounted) {
-            child.#unmount();
+            child.unmount();
         }
         
         return this;
@@ -538,8 +536,71 @@ class Component<N extends Node | null = Node | null> {
     }
 
     mount(): Component<N> {
-        this.#mount();
-        this.update();
+        const stack: Component[] = [this];
+        for (;;) {
+            const component = stack.pop();
+            if (!component) {
+                break;
+            }
+            if (component.#mounted) {
+                break;
+            }
+            component.#mounted = true;
+
+            if (component.#mountListeners) {
+                for (const listener of component.#mountListeners) {
+                    try {
+                        listener();
+                    } catch (e) {
+                        component.injectError(e);
+                    }
+                    if (!component.#mounted) {
+                        return this; // in case a mount handler caused the tree to be (synchronously) unmounted
+                    }
+                }
+            }
+
+            for (let c = component.#lastChild; c; c = c.#prevSibling) {
+                stack.push(c);
+            }
+        }
+        
+        this.update(); // immediately update a mounted tree
+        return this;
+    }
+
+    unmount(): Component<N> {
+        if (this.#parent) {
+            throw new Error('can only explicitly unmount root components (not already inserted in a tree)');
+        }
+        const stack: Component[] = [this];
+        for (;;) {
+            const component = stack.pop();
+            if (!component) {
+                break;
+            }
+            if (!component.#mounted) {
+                break;
+            }
+            component.#mounted = false;
+
+            if (component.#unmountListeners) {
+                for (const listener of component.#unmountListeners) {
+                    try {
+                        listener();
+                    } catch (e) {
+                        component.injectError(e);
+                    }
+                    if (component.#mounted) {
+                        return this; // in case an unmount handler caused the tree to be (synchronously) mounted
+                    }
+                }
+            }
+
+            for (let c = component.#lastChild; c; c = c.#prevSibling) {
+                stack.push(c);
+            }
+        }
         return this;
     }
 
@@ -554,6 +615,7 @@ class Component<N extends Node | null = Node | null> {
                 break;
             }
             ++touchedComponents;
+
             if (component.#updateListeners) {
                 let skipSubtree = false;
                 for (const listener of component.#updateListeners) {
@@ -570,71 +632,14 @@ class Component<N extends Node | null = Node | null> {
                     continue;
                 }
             }
-            for (let c = component.#firstChild; c; c = c.#nextSibling) {
+
+            for (let c = component.#lastChild; c; c = c.#prevSibling) {
                 if (c.#updateListenerCount > 0) {
                     stack.push(c);
                 }
             }
         }
         return this;
-    }
-
-    #mount(): void {
-        const stack: Component[] = [this];
-        for (;;) {
-            const component = stack.pop();
-            if (!component) {
-                break;
-            }
-            if (component.#mounted) {
-                break;
-            }
-            component.#mounted = true;
-            if (component.#mountListeners) {
-                for (const listener of component.#mountListeners) {
-                    try {
-                        listener();
-                    } catch (e) {
-                        component.injectError(e);
-                    }
-                    if (!component.#mounted) {
-                        return; // in case a mount handler caused the tree to be (synchronously) unmounted
-                    }
-                }
-            }
-            for (let c = component.#firstChild; c; c = c.#nextSibling) {
-                stack.push(c);
-            }
-        }
-    }
-
-    #unmount(): void {
-        const stack: Component[] = [this];
-        for (;;) {
-            const component = stack.pop();
-            if (!component) {
-                break;
-            }
-            if (!component.#mounted) {
-                break;
-            }
-            component.#mounted = false;
-            if (component.#unmountListeners) {
-                for (const listener of component.#unmountListeners) {
-                    try {
-                        listener();
-                    } catch (e) {
-                        component.injectError(e);
-                    }
-                    if (component.#mounted) {
-                        return; // in case an unmount handler caused the tree to be (synchronously) mounted
-                    }
-                }
-            }
-            for (let c = component.#firstChild; c; c = c.#nextSibling) {
-                stack.push(c);
-            }
-        }
     }
 
     #getChildContainerNode(): Node | null {
@@ -1068,17 +1073,17 @@ function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem
 
 
 function ErrorBoundary(
-    fallbackThunk: (this: Component<null>, error: Error, reset: () => void) => FragmentItem,
-    bodyThunk: (this: Component<null>) => FragmentItem
+    fallback: (this: Component<null>, error: Error, reset: () => void) => FragmentItem,
+    body: (this: Component<null>) => FragmentItem
 ): Component<null> {
     const component = new Component(null, 'ErrorBoundary').setErrorHandler(onError);
-    const boundFallbackThunk = fallbackThunk.bind(component);
-    const boundBodyThunk = bodyThunk.bind(component);
+    const boundFallback = fallback.bind(component);
+    const boundBody = body.bind(component);
     initContent();
     return component;
 
     function onError(error: unknown): boolean {
-        const fragment = flattenFragment(boundFallbackThunk(toError(error), initContent));
+        const fragment = flattenFragment(boundFallback(toError(error), initContent));
         component.clear();
         component.appendChildren(fragment);
         console.error(`Error caught by ErrorBoundary: ${errorDescription(error)}`);
@@ -1087,7 +1092,7 @@ function ErrorBoundary(
 
     function initContent(): void {
         try {
-            const fragment = flattenFragment(boundBodyThunk());
+            const fragment = flattenFragment(boundBody());
             component.clear();
             component.appendChildren(fragment);
         } catch (e) {
@@ -1102,7 +1107,7 @@ function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: FragmentItem[
     const body = new Component(null, 'SuspenseBody').appendFragment(bodyFragment);
     const component = new Component(null, 'Suspense');
     component.appendChild(body);
-    body.setSuspenseHandler((count) => {
+    body.setSuspenseHandler(function suspenseHandler(count) {
         if (count > 0) {
             if (!body.isDetached) {
                 body.setDetached(true);
@@ -1119,16 +1124,16 @@ function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: FragmentItem[
 }
 
 
-function Lazy(bodyThunk: (this: Component<null>) => FragmentItem | Promise<FragmentItem>): Component<null> {
+function Lazy(body: (this: Component<null>) => FragmentItem | Promise<FragmentItem>): Component<null> {
     const component = new Component(null, 'Lazy');
-    const boundBodyThunk = bodyThunk.bind(component);
+    const boundBody = body.bind(component);
     let loaded = false;
-    component.addMountListener(() => {
+    component.addMountListener(function onMountLazy() {
         if (loaded) {
             return;
         }
         loaded = true;
-        const bodyResult = boundBodyThunk();
+        const bodyResult = boundBody();
         if (!(bodyResult instanceof Promise)) {
             component.appendFragment(bodyResult);
             return;
