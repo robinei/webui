@@ -118,7 +118,6 @@ class Component<N extends Node | null = Node | null> {
     #mountListeners: (() => void)[] | undefined;
     #unmountListeners: (() => void)[] | undefined;
     #updateListeners: (() => void | false)[] | undefined;
-    #updateListenerCount = 0; // count for subtree
 
     #errorHandler: ((error: unknown) => boolean) | undefined;
     #unhandledError: unknown;
@@ -223,7 +222,6 @@ class Component<N extends Node | null = Node | null> {
         } else {
             this.#updateListeners = [listener.bind(this)];
         }
-        this.#addUpdateListenerCount(1);
         return this;
     }
 
@@ -387,10 +385,6 @@ class Component<N extends Node | null = Node | null> {
         }
         child.#nextSibling = before;
         child.#parent = this;
-
-        if (child.#updateListenerCount) {
-            this.#addUpdateListenerCount(child.#updateListenerCount);
-        }
         
         const container = this.#getChildContainerNode();
         if (container) {
@@ -430,10 +424,6 @@ class Component<N extends Node | null = Node | null> {
         child.#prevSibling = null;
         child.#nextSibling = null;
         child.#parent = null;
-
-        if (child.#updateListenerCount) {
-            this.#addUpdateListenerCount(-child.#updateListenerCount);
-        }
         
         if (!this.#detached) {
             const container = this.#getChildContainerNode();
@@ -634,7 +624,7 @@ class Component<N extends Node | null = Node | null> {
             }
 
             for (let c = component.#lastChild; c; c = c.#prevSibling) {
-                if (c.#updateListenerCount > 0) {
+                if (c.#updateListeners || c.#firstChild) {
                     stack.push(c);
                 }
             }
@@ -764,12 +754,6 @@ class Component<N extends Node | null = Node | null> {
             }
         }
         return null;
-    }
-
-    #addUpdateListenerCount(diff: number): void {
-        for (let c: Component | null = this; c; c = c.#parent) {
-            c.#updateListenerCount += diff;
-        }
     }
 
     #addSuspenseCount(diff: number): void {
