@@ -386,9 +386,11 @@ class Component<N extends Node | null = Node | null> {
         child.#nextSibling = before;
         child.#parent = this;
         
-        const container = this.#getChildContainerNode();
-        if (container) {
-            child.#insertNodesInto(container, child.#getInsertionAnchor());
+        if (!child.#detached) {
+            const container = this.#getChildContainerNode();
+            if (container) {
+                child.#insertNodesInto(container, child.#getInsertionAnchor());
+            }
         }
 
         if (child.#suspenseCount && !child.#suspenseHandler) {
@@ -425,7 +427,7 @@ class Component<N extends Node | null = Node | null> {
         child.#nextSibling = null;
         child.#parent = null;
         
-        if (!this.#detached) {
+        if (!child.#detached) {
             const container = this.#getChildContainerNode();
             if (container) {
                 child.#removeNodesFrom(container);
@@ -653,20 +655,24 @@ class Component<N extends Node | null = Node | null> {
     }
 
     #insertNodesInto(container: Node, beforeNode: Node | null): void {
-        if (this.#detached) {
-            return;
-        }
         const node = this.#node;
         if (node) {
             if (!node.parentNode) {
                 container.insertBefore(node, beforeNode);
-            } else if (node.parentNode !== container) {
-                throw new Error('unexpected parent node');
+            } else {
+                if (node.parentNode !== container) {
+                    throw new Error('unexpected parentNode');
+                }
+                if (node.nextSibling !== beforeNode) {
+                    throw new Error('unexpected nextSibling');
+                }
             }
             return;
         }
         for (let c = this.#firstChild; c; c = c.#nextSibling) {
-            c.#insertNodesInto(container, beforeNode);
+            if (!c.#detached) {
+                c.#insertNodesInto(container, beforeNode);
+            }
         }
     }
 
