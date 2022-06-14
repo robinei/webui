@@ -1,6 +1,6 @@
 import { calcLevenshteinOperations, toError, WritableKeys, errorDescription, asyncDelay } from './util';
 
-// used as a private "missing" placeholder, that outside code can't manufacture
+// used as a private 'missing' placeholder that outside code can't manufacture
 const NIL: unique symbol = Symbol();
 type NIL = typeof NIL;
 
@@ -102,6 +102,31 @@ type RewriteThisParameter<F> =
     F extends (...args: infer Args) => infer Ret ? (this: Component, ...args: Args) => Ret : never;
 
 
+class Context<T> {
+    #name: string;
+    
+    get name(): string { return this.#name; }
+
+    constructor(name: string) { this.#name = name; }
+
+    Consume(bodyFunc: (value: T) => FragmentItem): Component<null> {
+        const self = this;
+        const component = new Component(null, this.#name + '.Consume');
+        let lastValue: T | NIL = NIL;
+        component.addUpdateListener(function updateContextConsumer() {
+            const value = component.getContext(self);
+            if (value === lastValue) {
+                return;
+            }
+            lastValue = value;
+            const body = flattenFragment(bodyFunc(value));
+            component.clear();
+            component.appendChildren(body);
+        });
+        return component;
+    }
+}
+
 
 class Component<N extends Node | null = Node | null> {
     readonly #node: N;
@@ -124,6 +149,8 @@ class Component<N extends Node | null = Node | null> {
 
     #suspenseCount = 0;
     #suspenseHandler: ((count: number) => void) | undefined;
+
+    #contextValues: Map<Context<unknown>, unknown> | undefined;
 
     get node(): N { return this.#node; }
     get name(): string { return this.#name ?? this.#node?.nodeName ?? 'anonymous'; }
@@ -159,6 +186,26 @@ class Component<N extends Node | null = Node | null> {
         this.#suspenseHandler = handler.bind(this);
         this.#suspenseHandler(this.#suspenseCount); // always invoke (even with 0), so the handler can ensure things start out according to the current count
         return this;
+    }
+    
+    provideContext<T>(context: Context<T>, value: T): Component<N> {
+        if (!this.#contextValues) {
+            this.#contextValues = new Map();
+        }
+        this.#contextValues.set(context, value);
+        return this;
+    }
+
+    getContext<T>(context: Context<T>): T {
+        for (let c: Component | null = this; c; c = c.#parent) {
+            if (c.#contextValues) {
+                const value = c.#contextValues.get(context);
+                if (value !== undefined) {
+                    return value as T;
+                }
+            }
+        }
+        throw new Error('context not provided: ' + context.name);
     }
 
     async trackAsyncLoad(load: (this: Component<N>) => Promise<void>): Promise<void> {
@@ -359,10 +406,6 @@ class Component<N extends Node | null = Node | null> {
             throw new Error('component is already attached to a component');
         }
 
-        if (this.#mounted && !child.#mounted) {
-            child.mount();
-        }
-
         if (before) {
             if (before.#parent !== this) {
                 throw new Error('reference component not child of this component');
@@ -385,18 +428,22 @@ class Component<N extends Node | null = Node | null> {
         }
         child.#nextSibling = before;
         child.#parent = this;
+
+        if (child.#suspenseCount && !child.#suspenseHandler) {
+            // component doesn't contribute to our count when it has a handler.
+            // use pre-mount count because if mount changed the count then that diff will already have been added here
+            this.#addSuspenseCount(child.#suspenseCount);
+        }
+
+        if (this.#mounted && !child.#mounted) {
+            child.mount();
+        }
         
         if (!child.#detached) {
             const container = this.#getChildContainerNode();
             if (container) {
                 child.#insertNodesInto(container, child.#getInsertionAnchor());
             }
-        }
-
-        if (child.#suspenseCount && !child.#suspenseHandler) {
-            // component doesn't contribute to our count when it has a handler.
-            // use pre-mount count because if mount changed the count then that diff will already have been added here
-            this.#addSuspenseCount(child.#suspenseCount);
         }
 
         if (child.#unhandledError !== undefined) {
@@ -524,7 +571,6 @@ class Component<N extends Node | null = Node | null> {
             root.#unhandledError = error;
             console.error(`unhandled error: ${errorDescription(error)}`);
         }
-        root.#updateRoot();
     }
 
     mount(): Component<N> {
@@ -792,6 +838,7 @@ class Component<N extends Node | null = Node | null> {
 
 let updaterCount = 0;
 let touchedComponents = 0;
+
 
 
 
@@ -1237,6 +1284,8 @@ function TodoListView(model: TodoListModel) {
 
 
 
+const TestContext = new Context<string>('TestContext');
+
 
 function TestComponent() {
     return ErrorBoundary(ErrorFallback, function () {
@@ -1270,6 +1319,8 @@ function TestComponent() {
                 H('span', null, 'd')),
             
             H('br'),
+            TestContext.Consume(value => ['Context value: ', value]),
+            H('br'),
             H('button', { onclick() { throw new Error('test error'); } }, 'Fail'), H('br'),
 
             Lazy(async () => {
@@ -1287,7 +1338,7 @@ function TestComponent() {
                     H('tr', null,
                         Repeat(() => width, (x) =>
                             H('td', null, [((x+1)*(y+1)).toString(), ' | ']))))),
-        ));
+        )).provideContext(TestContext, 'jalla');
 
         function Slider(value: Value<number>, min: number, max: number, callback: (v: number) => void) {
             return H('input', {
