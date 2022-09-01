@@ -1,8 +1,8 @@
-import { calcLevenshteinOperations, toError, WritableKeys, errorDescription, asyncDelay } from './util';
+import { calcLevenshteinOperations, WritableKeys, errorDescription, asyncDelay } from './util';
 
 // used as a private 'missing' placeholder that outside code can't manufacture
-const NIL: unique symbol = Symbol();
-type NIL = typeof NIL;
+const Nil: unique symbol = Symbol('Nil');
+type Nil = typeof Nil;
 
 
 
@@ -11,7 +11,7 @@ type DynamicValue<T> = Promise<T> | ValueFunc<T>;
 type ValueFunc<T> = () => ValueFuncResult<T>;
 type ValueFuncResult<T> = T | Promise<T> | Loading;
 export type Loading = typeof Loading;
-export const Loading: unique symbol = Symbol();
+export const Loading: unique symbol = Symbol('Loading');
 
 export function isStaticValue<T>(value: Value<T>): value is T {
     return typeof value !== 'function' && !(value instanceof Promise);
@@ -24,7 +24,7 @@ export function mapValue<T, R>(value: Value<T>, mapper: (v: T) => R): Value<R> {
     if (value instanceof Promise) {
         return value.then(mapper);
     }
-    let lastInput: ValueFuncResult<T> | NIL = NIL;
+    let lastInput: ValueFuncResult<T> | Nil = Nil;
     let lastOutput: ValueFuncResult<R>;
     return function valueMapper() {
         const v = value();
@@ -33,7 +33,7 @@ export function mapValue<T, R>(value: Value<T>, mapper: (v: T) => R): Value<R> {
         }
         lastInput = v;
         if (v === Loading) {
-            lastOutput = v;
+            lastOutput = Loading;
         } else if (v instanceof Promise) {
             lastOutput = v.then(mapper);
         } else {
@@ -112,7 +112,7 @@ class Context<T> {
     Consume(bodyFunc: (value: T) => FragmentItem): Component<null> {
         const self = this;
         const component = new Component(null, this.#name + '.Consume');
-        let lastValue: T | NIL = NIL;
+        let lastValue: T | Nil = Nil;
         component.addUpdateListener(function updateContextConsumer() {
             const value = component.getContext(self);
             if (value === lastValue) {
@@ -183,8 +183,8 @@ class Component<N extends Node | null = Node | null> {
             // we don't contribute to parent count when we have a handler
             this.#parent.#addSuspenseCount(-this.#suspenseCount);
         }
-        this.#suspenseHandler = handler.bind(this);
-        this.#suspenseHandler(this.#suspenseCount); // always invoke (even with 0), so the handler can ensure things start out according to the current count
+        const boundHandler = this.#suspenseHandler = handler.bind(this);
+        boundHandler(this.#suspenseCount); // always invoke (even with 0), so the handler can ensure things start out according to the current count
         return this;
     }
     
@@ -275,7 +275,7 @@ class Component<N extends Node | null = Node | null> {
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck: boolean = true): Component<N> {
         const self = this;
         const boundWatcher = watcher.bind(self);
-        let lastEmittedValue: T | NIL = NIL;
+        let lastEmittedValue: T | Nil = Nil;
 
         if (isStaticValue(value)) {
             onValueChanged(value);
@@ -291,7 +291,7 @@ class Component<N extends Node | null = Node | null> {
         }
 
         const valueFunc = value;
-        let lastVal: ValueFuncResult<T> | NIL = NIL;
+        let lastVal: ValueFuncResult<T> | Nil = Nil;
         self.addUpdateListener(function checkIfValueChanged(): void {
             const newVal = valueFunc();
             if (equalCheck && newVal === lastVal) {
@@ -340,12 +340,12 @@ class Component<N extends Node | null = Node | null> {
 
     setAttributes(attributes: Attributes<N> | null): Component<N> {
         for (const name in attributes) {
-            const value = attributes[name]! as unknown as Value<Primitive>;
+            const value = (attributes as any)[name];
 
             if (typeof value === 'function' && name.startsWith('on')) {
                 switch (name) {
                 case 'onupdate':
-                    this.addUpdateListener(value as any);
+                    this.addUpdateListener(value);
                     break;
                 case 'onmount':
                     this.addMountListener(value);
@@ -373,9 +373,7 @@ class Component<N extends Node | null = Node | null> {
                     throw new Error('attribute requires node to be Element');
                 }
                 const elem = this.#node;
-                this.addValueWatcher(value, function onAttributeChanged(primitive) {
-                    setElementAttribute(elem, name, primitive);
-                });
+                this.addValueWatcher(value, setElementAttribute.bind(null, elem, name));
             }
         }
         return this;
@@ -406,6 +404,10 @@ class Component<N extends Node | null = Node | null> {
             throw new Error('component is already attached to a component');
         }
 
+        if (this.#mounted && !child.#mounted) {
+            child.mount();
+        }
+
         if (before) {
             if (before.#parent !== this) {
                 throw new Error('reference component not child of this component');
@@ -433,10 +435,6 @@ class Component<N extends Node | null = Node | null> {
             // component doesn't contribute to our count when it has a handler.
             // use pre-mount count because if mount changed the count then that diff will already have been added here
             this.#addSuspenseCount(child.#suspenseCount);
-        }
-
-        if (this.#mounted && !child.#mounted) {
-            child.mount();
         }
         
         if (!child.#detached) {
@@ -581,7 +579,7 @@ class Component<N extends Node | null = Node | null> {
                 break;
             }
             if (component.#mounted) {
-                break;
+                continue;
             }
             component.#mounted = true;
 
@@ -618,7 +616,7 @@ class Component<N extends Node | null = Node | null> {
                 break;
             }
             if (!component.#mounted) {
-                break;
+                continue;
             }
             component.#mounted = false;
 
@@ -985,7 +983,6 @@ function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string)
     });
     return component;
 }
-const foo = With(1, (_) => 'foo');
 
 function If(condValue: boolean, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component[];
 function If(condValue: DynamicValue<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null>;
@@ -998,7 +995,7 @@ function When(condValue: boolean, ...bodyFragment: FragmentItem[]): Component[];
 function When(condValue: DynamicValue<boolean>, ...bodyFragment: FragmentItem[]): Component<null>;
 function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[];
 function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[] {
-    return With(condValue, function evelWhen(cond) { return cond ? bodyFragment : null; }, 'When');
+    return With(condValue, function evalWhen(cond) { return cond ? bodyFragment : null; }, 'When');
 }
 
 function Unless(condValue: boolean, ...bodyFragment: FragmentItem[]): Component[];
@@ -1110,7 +1107,7 @@ function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem
 
 
 function ErrorBoundary(
-    fallback: (this: Component<null>, error: Error, reset: () => void) => FragmentItem,
+    fallback: (this: Component<null>, error: unknown, reset: () => void) => FragmentItem,
     body: (this: Component<null>) => FragmentItem
 ): Component<null> {
     const component = new Component(null, 'ErrorBoundary').setErrorHandler(onError);
@@ -1120,10 +1117,17 @@ function ErrorBoundary(
     return component;
 
     function onError(error: unknown): boolean {
-        const fragment = flattenFragment(boundFallback(toError(error), initContent));
-        component.clear();
-        component.appendChildren(fragment);
         console.error(`Error caught by ErrorBoundary: ${errorDescription(error)}`);
+        try {
+            const fragment = flattenFragment(boundFallback(error, initContent));
+            component.clear();
+            component.appendChildren(fragment);
+        } catch (e) {
+            const msg = `Error in ErrorBoundary fallback: ${(errorDescription(e))}`;
+            console.error(msg);
+            component.clear();
+            component.appendChild(StaticText(msg));
+        }
         return true;
     }
 
@@ -1133,7 +1137,7 @@ function ErrorBoundary(
             component.clear();
             component.appendChildren(fragment);
         } catch (e) {
-            component.injectError(e);
+            onError(e);
         }
     }
 }
@@ -1289,22 +1293,19 @@ const TestContext = new Context<string>('TestContext');
 
 function TestComponent() {
     return ErrorBoundary(ErrorFallback, function () {
-        const errorBoundary = this;
         const [cb1, checked1] = CheckBox();
         const [cb2, checked2] = CheckBox();
         const [cb3, checked3] = CheckBox();
         const [cb4, checked4] = CheckBox();
 
-        const asyncTrue = asyncDelay(500).then(() => true);
-
         let width = 15;
         let height: number | Loading = Loading;
-        asyncDelay(600).then(() => {
+        asyncDelay(800).then(() => {
             height = 10;
-            errorBoundary.update();
+            this.update();
         });
 
-        return Suspense('Loading...', When(asyncTrue,
+        return Suspense('Loading...',
             cb1, H('br'),
             cb2, H('br'),
             cb3, H('br'),
@@ -1330,6 +1331,7 @@ function TestComponent() {
             Lazy(() => {
                 return ['Loaded 2', H('br')];
             }),
+            asyncDelay(500).then(() => 'Async text'), H('br'),
             
             'Width: ', Slider(() => width, 1, 20, (w) => { width = w; }), H('br'),
             'Height: ', Slider(() => height, 1, 20, (h) => { height = h; }), H('br'),
@@ -1338,7 +1340,7 @@ function TestComponent() {
                     H('tr', null,
                         Repeat(() => width, (x) =>
                             H('td', null, [((x+1)*(y+1)).toString(), ' | ']))))),
-        )).provideContext(TestContext, 'jalla');
+        ).provideContext(TestContext, 'jalla');
 
         function Slider(value: Value<number>, min: number, max: number, callback: (v: number) => void) {
             return H('input', {
@@ -1359,7 +1361,7 @@ function TestComponent() {
     });
 }
 
-function ErrorFallback(error: Error, reset: () => void): FragmentItem {
+function ErrorFallback(error: unknown, reset: () => void): FragmentItem {
     return [
         H('pre', null, errorDescription(error)),
         H('button', { onclick: reset }, 'Reset')

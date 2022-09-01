@@ -10,10 +10,6 @@ export type WritablePart<T> = Pick<T, WritableKeys<T>>;
 
 
 
-export function toError(e: unknown): Error {
-    return e instanceof Error ? e : new Error(`thrown value: ${e}`);
-}
-
 export function errorDescription(e: unknown): string {
     return e instanceof Error ? e.stack ?? e.message : `thrown value: ${e}`;
 }
