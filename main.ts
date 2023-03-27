@@ -1,17 +1,15 @@
 import { calcLevenshteinOperations, WritableKeys, errorDescription, asyncDelay } from './util';
 
-// used as a private 'missing' placeholder that outside code can't manufacture
+// used as a private 'missing' placeholder that outside code can't create
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
-
-
-type Value<T> = T | DynamicValue<T>;
-type DynamicValue<T> = Promise<T> | ValueFunc<T>;
-type ValueFunc<T> = () => ValueFuncResult<T>;
-type ValueFuncResult<T> = T | Promise<T> | Loading;
-export type Loading = typeof Loading;
 export const Loading: unique symbol = Symbol('Loading');
+export type Loading = typeof Loading;
+
+export type Value<T> = T | Promise<T> | ValueFunc<T>;
+export type ValueFunc<T> = (newValue?: T) => ValueFuncResult<T>;
+type ValueFuncResult<T> = T | Promise<T> | Loading;
 
 export function isStaticValue<T>(value: Value<T>): value is T {
     return typeof value !== 'function' && !(value instanceof Promise);
@@ -40,6 +38,16 @@ export function mapValue<T, R>(value: Value<T>, mapper: (v: T) => R): Value<R> {
             lastOutput = mapper(v);
         }
         return lastOutput;
+    };
+}
+
+function newProp<T>(initialValue?: ValueFuncResult<T>): ValueFunc<T> {
+    let value = initialValue === undefined ? Loading : initialValue;
+    return (newValue?: ValueFuncResult<T>) => {
+        if (newValue !== undefined) {
+            value = newValue;
+        }
+        return value;
     };
 }
 
@@ -152,6 +160,12 @@ class Component<N extends Node | null = Node | null> {
 
     #contextValues: Map<Context<unknown>, unknown> | undefined;
 
+    // override this for components where content should be placed deeper
+    /*setContent: (fragment: FragmentItem) => void = fragment => {
+        this.clear();
+        this.appendFragment(fragment);
+    };*/
+
     get node(): N { return this.#node; }
     get name(): string { return this.#name ?? this.#node?.nodeName ?? 'anonymous'; }
     get isDetached(): boolean { return this.#detached; }
@@ -219,6 +233,16 @@ class Component<N extends Node | null = Node | null> {
         }
     }
 
+    #maybeWrapAsync(func: () => void | Promise<void>): (() => void) {
+        const self = this;
+        return function asyncErrorHandler() {
+            const result = func();
+            if (result instanceof Promise) {
+                result.catch(e =>  self.injectError(e));
+            }
+        };
+    }
+
     addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: Component<N>, ev: GlobalEventHandlersEventMap[K]) => any): Component<N> {
         const self = this;
         if (!self.#node) {
@@ -237,8 +261,8 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addMountListener(listener: (this: Component<N>) => void): Component<N> {
-        const boundListener = listener.bind(this);
+    addMountListener(listener: (this: Component<N>) => void | Promise<void>): Component<N> {
+        const boundListener = this.#maybeWrapAsync(listener.bind(this));
         if (this.#mountListeners) {
             this.#mountListeners.push(boundListener);
         } else {
@@ -254,11 +278,12 @@ class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addUnmountListener(listener: (this: Component<N>) => void): Component<N> {
+    addUnmountListener(listener: (this: Component<N>) => void | Promise<void>): Component<N> {
+        const boundListener = this.#maybeWrapAsync(listener.bind(this));
         if (this.#unmountListeners) {
-            this.#unmountListeners.push(listener.bind(this));
+            this.#unmountListeners.push(boundListener);
         } else {
-            this.#unmountListeners = [listener.bind(this)];
+            this.#unmountListeners = [boundListener];
         }
         return this;
     }
@@ -283,7 +308,7 @@ class Component<N extends Node | null = Node | null> {
         }
         
         if (value instanceof Promise) {
-            self.trackAsyncLoad(async function performePromiseLoad() {
+            self.trackAsyncLoad(async function awaitPromiseLoad() {
                 const v = await value;
                 onValueChanged(v);
             });
@@ -316,7 +341,7 @@ class Component<N extends Node | null = Node | null> {
                 return; // don't listen to same Promise (even if equalCheck is false)
             }
             lastVal = newVal;
-            self.trackAsyncLoad(async function performePromiseLoad() {
+            self.trackAsyncLoad(async function awaitPromiseLoad() {
                 const v = await newVal;
                 if (newVal === lastVal) {
                     onValueChanged(v);
@@ -438,7 +463,7 @@ class Component<N extends Node | null = Node | null> {
         }
         
         if (!child.#detached) {
-            const container = this.#getChildContainerNode();
+            let container = this.#getChildContainerNode();
             if (container) {
                 child.#insertNodesInto(container, child.#getInsertionAnchor());
             }
@@ -961,18 +986,14 @@ function StaticText(value: string): Component<Text> {
     return new Component(document.createTextNode(value));
 }
 
-
 function DynamicText(value: Value<Primitive>): Component<Text> {
     const node = document.createTextNode('');
-    return new Component(node).addValueWatcher(value, function onTextChanged(primitive) {
+    return new Component(node).addValueWatcher(value, function onDynamicTextChanged(primitive) {
         node.nodeValue = primitive?.toString() ?? '';
     });
 }
 
 
-function With<T>(value: T, mapper: (v: T) => FragmentItem, name?: string): Component[];
-function With<T>(value: DynamicValue<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null>;
-function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null> | Component[];
 function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null> | Component[] {
     if (isStaticValue(value)) {
         return flattenFragment(mapper(value));
@@ -984,31 +1005,18 @@ function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string)
     return component;
 }
 
-function If(condValue: boolean, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component[];
-function If(condValue: DynamicValue<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null>;
-function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> | Component[];
 function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> | Component[] {
     return With(condValue, function evalIf(cond) { return cond ? thenFragment : elseFragment; }, 'If');
 }
 
-function When(condValue: boolean, ...bodyFragment: FragmentItem[]): Component[];
-function When(condValue: DynamicValue<boolean>, ...bodyFragment: FragmentItem[]): Component<null>;
-function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[];
 function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[] {
     return With(condValue, function evalWhen(cond) { return cond ? bodyFragment : null; }, 'When');
 }
 
-function Unless(condValue: boolean, ...bodyFragment: FragmentItem[]): Component[];
-function Unless(condValue: DynamicValue<boolean>, ...bodyFragment: FragmentItem[]): Component<null>;
-function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[];
 function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[] {
     return With(condValue, function evalUnless(cond) { return cond ? null : bodyFragment; }, 'Unless');
 }
 
-
-function Match<T extends Primitive>(value: T, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component[];
-function Match<T extends Primitive>(value: DynamicValue<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null>;
-function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null> | Component[];
 function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null> | Component[] {
     return With(value, function evalMatch(v: T) {
         for (const [matcher, ...fragment] of cases) {
@@ -1023,42 +1031,38 @@ function Else<T>(_: T): true {
     return true;
 }
 
-
-function For<T>(itemsValue: T[], renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component[];
-function For<T>(itemsValue: DynamicValue<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null>;
-function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> | Component[];
 function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> | Component[] {
     if (isStaticValue(itemsValue)) {
         return flattenFragment(itemsValue.map(renderFunc));
     }
 
-    const keyOf = keyFunc ?? ((item) => item);
-    let map = new Map<unknown, Component[]>();
+    const keyOf = keyFunc ?? (item => item);
+    let fragmentMap = new Map<unknown, Component[]>();
 
     const component = new Component(null, 'For');
     component.addValueWatcher(itemsValue, function checkItems(items) {
         if (areChildrenEqual(items)) {
             return;
         }
-        const newMap = new Map();
+        const newFragmentMap = new Map();
         const children: Component[] = [];
         for (const item of items) {
             const key = keyOf(item);
-            const fragment = map.get(key) ?? flattenFragment(renderFunc(item));
-            newMap.set(key, fragment);
+            const fragment = fragmentMap.get(key) ?? flattenFragment(renderFunc(item));
+            newFragmentMap.set(key, fragment);
             for (const child of fragment) {
                 children.push(child);
             }
         }
         component.replaceChildren(children);
-        map = newMap;
+        fragmentMap = newFragmentMap;
     }, false);
     return component;
 
     function areChildrenEqual(items: T[]): boolean {
         let c = component.firstChild;
         for (const item of items) {
-            let fragment = map.get(keyOf(item));
+            let fragment = fragmentMap.get(keyOf(item));
             if (!fragment) {
                 return false;
             }
@@ -1073,10 +1077,6 @@ function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, k
     }
 }
 
-
-function Repeat(countValue: number, itemFunc: (i: number) => FragmentItem): Component[];
-function Repeat(countValue: DynamicValue<number>, itemFunc: (i: number) => FragmentItem): Component<null>;
-function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component<null> | Component[];
 function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component<null> | Component[] {
     if (isStaticValue(countValue)) {
         const fragment: FragmentItem[] = [];
@@ -1199,33 +1199,33 @@ interface TodoItemModel {
 }
 
 class TodoListModel {
-    private readonly items: TodoItemModel[] = [];
+    readonly #items: TodoItemModel[] = [];
 
     addItem(title: string) {
-        this.items.push({
+        this.#items.push({
             title,
             done: false,
-            index: this.items.length,
+            index: this.#items.length,
         });
         return this;
     }
 
     setAllDone = () => {
-        for (const item of this.items) {
+        for (const item of this.#items) {
             item.done = true;
         }
         return this;
     };
 
     setNoneDone = () => {
-        for (const item of this.items) {
+        for (const item of this.#items) {
             item.done = false;
         }
         return this;
     };
 
-    getItems = () => {
-        return this.items;
+    items = () => {
+        return this.#items;
     };
 }
 
@@ -1247,6 +1247,34 @@ function TodoItemView(item: TodoItemModel) {
         () => item.title,
         If(() => item.done, ' - Done')
     );
+}
+
+
+function TodoItemView2(itemPromise: Promise<TodoItemModel>) {
+    let item: TodoItemModel = {
+        title: "Loading...",
+        done: false,
+        index: 0,
+    };
+    return H('div', {
+            onclick() { item.done = !item.done; },
+            style: {
+                cursor: 'pointer',
+                backgroundColor: () => (item.index % 2) ? '#aaaaaa' : '#ffffff',
+            }
+        },
+        H('input', {
+            type: 'checkbox',
+            checked: () => item.done,
+            onchange(ev: Event) {
+                item.done = (ev.target as any).checked;
+            }
+        }),
+        () => item.title,
+        If(() => item.done, ' - Done')
+    ).addMountListener(async function onMount() {
+        item = await itemPromise;
+    });
 }
 
 function TodoListView(model: TodoListModel) {
@@ -1277,14 +1305,18 @@ function TodoListView(model: TodoListModel) {
         H('button', {
             onclick: model.setAllDone
         }, 'Select all'),
-        Match(() => model.getItems().length % 2,
+        Match(() => model.items().length % 2,
             [0, 'even'],
             [1, StaticText('odd')
                     .addMountListener(() => console.log('mounted'))
                     .addUnmountListener(() => console.log('unmounted'))]),
-        For(model.getItems, TodoItemView),
+        For(model.items, TodoItemView),
     );
 }
+
+
+
+
 
 
 
@@ -1292,16 +1324,17 @@ const TestContext = new Context<string>('TestContext');
 
 
 function TestComponent() {
-    return ErrorBoundary(ErrorFallback, function () {
+    return ErrorBoundary(ErrorFallback, function tryTestComponent() {
         const [cb1, checked1] = CheckBox();
         const [cb2, checked2] = CheckBox();
         const [cb3, checked3] = CheckBox();
         const [cb4, checked4] = CheckBox();
 
-        let width = 15;
-        let height: number | Loading = Loading;
+        let width = newProp(15);
+        let height = newProp<number>();
+        let scale = newProp(1);
         asyncDelay(800).then(() => {
-            height = 10;
+            height(10);
             this.update();
         });
 
@@ -1333,23 +1366,27 @@ function TestComponent() {
             }),
             asyncDelay(500).then(() => 'Async text'), H('br'),
             
-            'Width: ', Slider(() => width, 1, 20, (w) => { width = w; }), H('br'),
-            'Height: ', Slider(() => height, 1, 20, (h) => { height = h; }), H('br'),
+            'Width: ', Slider(width, 1, 20), H('br'),
+            'Height: ', Slider(height, 1, 20), H('br'),
+            'Scale: ', Slider(scale, 1, 10), H('br'),
             H('table', null,
-                Repeat(() => height, (y) =>
-                    H('tr', null,
-                        Repeat(() => width, (x) =>
-                            H('td', null, [((x+1)*(y+1)).toString(), ' | ']))))),
+                With(scale, s =>
+                    Repeat(height, y =>
+                        H('tr', null,
+                            Repeat(width, x =>
+                                H('td', null, [((x+1)*(y+1)*s).toString(), ' | '])))))),
         ).provideContext(TestContext, 'jalla');
 
-        function Slider(value: Value<number>, min: number, max: number, callback: (v: number) => void) {
+        function Slider(value: Value<number>, min: number, max: number) {
             return H('input', {
                 type: 'range',
                 min: min.toString(),
                 max: max.toString(),
-                value: mapValue(value, (v) => v.toString()),
+                value: mapValue(value, v => v.toString()),
                 oninput(ev: Event) {
-                    callback((ev.target as any).value);
+                    if (typeof value === 'function') {
+                        value((ev.target as any).value);
+                    }
                 }
             });
         }
@@ -1370,7 +1407,280 @@ function ErrorFallback(error: unknown, reset: () => void): FragmentItem {
 
 
 
+
+
+
+
+
+/*
+
+type ParsePathSpec<P extends string> =
+    P extends `${infer Prefix extends string}/${infer Rest extends string}`
+        ? ParsePathSpecTypedKey<Prefix> & ParsePathSpec<Rest>
+        : ParsePathSpecSuffix<P>;
+
+type ParsePathSpecSuffix<S extends string> =
+    S extends `${infer Prefix extends string}?${infer Query extends string}`
+        ? ParsePathSpecTypedKey<Prefix> & ParsePathSpecQuery<Query>
+        : ParsePathSpecTypedKey<S>;
+
+type ParsePathSpecQuery<Q extends string> =
+    Q extends `${infer Prefix extends string}&${infer Rest extends string}`
+        ? ParsePathSpecTypedKey<Prefix> & ParsePathSpecQuery<Rest>
+        : ParsePathSpecTypedKey<Q>;
+
+type ParsePathSpecTypedKey<S extends string> =
+    S extends `${infer Key extends string}:${infer Type extends string}`
+        ? { [_ in Key]: ParsePathSpecType<Type> }
+        : {};
+
+type ParsePathSpecType<S extends string> =
+    S extends 'string' ? string :
+    S extends 'number' ? number :
+    S extends 'boolean' ? boolean : unknown;
+
+type JoinPath<A extends string, B extends string> =
+    A extends `${infer AP extends string}/`
+        ? (B extends `/${infer BS extends string}` ? `${AP}/${BS}` : `${AP}/${B}`)
+        : (B extends `/${infer BS extends string}` ? `${A}/${BS}` : `${A}/${B}`);
+
+type FunctionsOf<T> = {
+    [K in keyof T]: () => T[K];
+};
+
+
+type Test = FunctionsOf<ParsePathSpec<'/hello/foo:string/test/bar:number/asdf?arg:boolean&arg2:number'>>;
+const test: Test = {} as any;
+
+
+
+
+
+
+
+type PathMatcher = (path: string, args: { [key: string]: unknown }) => string;
+
+function parsePathSpec(pathSpec: string): PathMatcher[] {
+    if (pathSpec === '') {
+        return [];
+    }
+    return pathSpec.split('/').map(part => {
+        if (part === '') {
+            return path => {
+                if (path.startsWith('/')) {
+                    return path.substring(1);
+                }
+                return path;
+            };
+        }
+
+        if (part.indexOf(':') < 0) {
+            const partSlash = part + '/';
+            return path => {
+                if (path === part) {
+                    return '';
+                }
+                if (path.startsWith(partSlash)) {
+                    return path.substring(partSlash.length);
+                }
+                return path;
+            };
+        }
+
+        const [key, type] = part.split(':');
+        if (!key || !type) {
+            throw new Error('bad path spec');
+        }
+        let parser: (s: string) => unknown;
+        switch (type) {
+            case 'string': parser = s => s; break;
+            case 'number': parser = s => {
+                const num = Number(s);
+                return isNaN(num) ? null : num;
+            }; break;
+            case 'boolean': parser = s => {
+                switch (s.toLowerCase()) {
+                    case '0':
+                    case 'no':
+                    case 'false': return false;
+                    case '1':
+                    case 'yes':
+                    case 'true': return true;
+                    default: return null;
+                }
+            }; break;
+            default: throw new Error(`unknown type '${type}' in path spec`);
+        }
+
+        return (path, args) => {
+            const i = path.indexOf('/');
+            const prefix = path.substring(0, i < 0 ? path.length : i);
+            const value = parser(prefix);
+            if (value !== null) {
+                args[key] = value;
+                return path.substring(prefix.length);
+            }
+            return path;
+        };
+    });
+}
+
+class RouterNode<Args> {
+    readonly #subnodes: RouterNode<any>[] = [];
+    #component: Component | undefined;
+    #matchers: PathMatcher[];
+    #args: Args | undefined;
+
+    constructor(readonly pathSpec: string, private readonly makeContent: (args: FunctionsOf<Args>) => FragmentItem) {
+        this.#matchers = parsePathSpec(pathSpec);
+    }
+
+    route<PathSpec extends string>(
+        pathSpec: PathSpec,
+        makeContent: (args: FunctionsOf<ParsePathSpec<PathSpec> & Args>) => FragmentItem
+    ): RouterNode<ParsePathSpec<PathSpec> & Args> {
+        const r = new RouterNode(pathSpec, makeContent);
+        this.#subnodes.push(r);
+        return r;
+    }
+
+    goto(path: string): boolean {
+        return this.handlePath(path, {});
+    }
+
+    private handlePath(path: string, prevArgs: { [key: string]: unknown }): boolean {
+        const newArgs: { [key: string]: unknown } = { ...prevArgs };
+
+        let rest = path;
+        for (const matcher of this.#matchers) {
+            const prev = rest;
+            rest = matcher(rest, newArgs);
+            if (Object.is(prev, rest)) {
+                return false;
+            }
+        }
+        this.#args = newArgs as any;
+
+        for (const subnode of this.#subnodes) {
+            if (subnode.handlePath(rest, newArgs)) {
+                this.component.setContent(subnode.component);
+                return true;
+            }
+        }
+
+        return true;
+    }
+
+    get component(): Component {
+        if (!this.#component) {
+            const args = this.#args;
+            if (!args) {
+                throw new Error('args should have been parsed');
+            }
+            const argFuncs: FunctionsOf<Args> = {} as any;
+            for (const key in args) {
+                (argFuncs as any)[key] = () => args[key]!;
+            }
+            const components = flattenFragment(this.makeContent(argFuncs));
+            if (components.length === 0) {
+                this.#component = StaticText('');
+            } else if (components.length === 1) {
+                this.#component = components[0]!;
+            } else {
+                this.#component = new Component<null>(null, 'RouteGroup').appendChildren(components);
+            }
+        }
+        return this.#component;
+    }
+}
+
+
+function Router(element: HTMLElement): RouterNode<''> {
+    return new RouterNode('', () => new Component(element, 'RouteRoot'));
+}
+
+
+const root = new RouterNode('', () => new Component<null>(null, 'RouteRoot'));
+
+const prefs = root.route('prefs', _ => 'preferences');
+const pref = prefs.route('name:string', args => ['viewing ', args.name]);
+const editPref = pref.route('edit', args => ['editing ', args.name]);
+
+
+root.goto('/prefs/foo')
+*/
+
 new Component(document.body).appendChildren([
     TodoListView(new TodoListModel().addItem('Bake bread')),
     TestComponent(),
+    //root.component,
 ]).mount();
+
+
+function benchmark(desc: string, iters: number, func: () => void): void {
+    console.time(desc);
+    try {
+        for (let i = 0; i < iters; ++i) {
+            func();
+        }
+    } finally {
+        console.timeEnd(desc);
+    }
+}
+
+const N = 10000;
+
+benchmark("Component", N, () => {
+    H('div', null,
+        'foo',
+        H('br'),
+        H('div', null, 'bar'),
+        'baz'
+    );
+});
+
+benchmark("Vanilla", N, () => {
+    const topDiv = document.createElement('div');
+    topDiv.appendChild(document.createTextNode('foo'));
+    topDiv.appendChild(document.createElement('br'));
+    const innerDiv = document.createElement('div');
+    innerDiv.textContent = 'bar';
+    topDiv.appendChild(innerDiv);
+    topDiv.appendChild(document.createTextNode('baz'));
+});
+
+
+/*
+async function asyncTest() {
+    async function* testGenerator(): AsyncGenerator<number, void, unknown> {
+        try {
+            for(let i = 0; ; ++i) {
+                console.log("iter");
+                await asyncDelay(1000);
+                yield i;
+            }
+        } finally {
+            console.log("finished");
+        }
+    }
+    
+    const gen = testGenerator();
+    for (let i = 0; i < 5; ++i) {
+        const x = await gen.next();
+        if (!x.done) {
+            console.log(x.value);
+        }
+    }
+    console.log("BREAK");
+    await asyncDelay(4000);
+    console.log("BROKE");
+    for (let i = 0; i < 5; ++i) {
+        const x = await gen.next();
+        if (!x.done) {
+            console.log(x.value);
+        }
+    }
+    gen.return();
+}
+asyncTest();
+*/
