@@ -201,7 +201,7 @@ export function calcLevenshteinDistance(a: unknown[], b: unknown[]): number {
 }
 
 type LevenshteinOperation<T> =
-    { type: 'insert', value: T, before: T | null } |
+    { type: 'insert', value: T, before: T | undefined } |
     { type: 'remove', value: T } |
     { type: 'replace', oldValue: T, newValue: T };
 
@@ -227,7 +227,7 @@ export function calcLevenshteinOperations<T>(a: T[], b: T[]): LevenshteinOperati
             --y;
             --x;
         } else if (left <= up && (left === curr || left === curr - 1)) {
-            operations.push({ type: 'insert', value: b[x - 1]!, before: x === w ? null : b[x]! ?? null });
+            operations.push({ type: 'insert', value: b[x - 1]!, before: x === w ? undefined : b[x]! ?? null });
             --x;
         } else {
             operations.push({ type: 'remove', value: a[y - 1]! });
