@@ -8,6 +8,7 @@
         "forceConsistentCasingInFileNames": true,
         "noUncheckedIndexedAccess": true,
         "sourceMap": true,
-        "outFile": "bundle.js"
+        "outFile": "bundle.js",
+        "rootDirs": ["src"]
     }
 }
