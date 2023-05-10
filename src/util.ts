@@ -34,17 +34,77 @@ export function asyncDelay(timeoutMillis: number): Promise<void> {
 }
 
 
-export function listsEqual(a: unknown[], b: unknown[]): boolean {
+export function isPlainObject(value: unknown): value is { [key: string]: unknown } {
+    return !!value && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+export function shallowEqual(a: unknown, b: unknown): boolean {
+    return a === b;
+}
+
+export function deepEqual(a: unknown, b: unknown): boolean {
+    if (Array.isArray(a)) {
+        return Array.isArray(b) && arraysEqual(a, b, deepEqual);
+    }
+    if (isPlainObject(a)) {
+        return isPlainObject(b) && objectsEqual(a, b, deepEqual);
+    }
+    return a === b;
+}
+
+export function arraysEqual(a: unknown[], b: unknown[], eq?: (a: unknown, b: unknown) => boolean): boolean {
     if (a.length !== b.length) {
         return false;
     }
+    eq ??= shallowEqual;
     for (let i = 0; i < a.length; ++i) {
-        if (a[i] !== b[i]) {
+        if (!eq(a[i], b[i])) {
             return false;
         }
     }
     return true;
 }
+
+export function objectsEqual(a: { [key: string]: unknown }, b: { [key: string]: unknown }, eq?: (a: unknown, b: unknown) => boolean): boolean {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) {
+        return false;
+    }
+    eq ??= shallowEqual;
+    aKeys.sort();
+    bKeys.sort();
+    for (let i = 0; i < aKeys.length; ++i) {
+        const key = aKeys[i]!;
+        if (key !== bKeys[i]) {
+            return false;
+        }
+        if (!eq(a[key], b[key])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function runDeepEqualTests() {
+    console.assert(deepEqual(1, 1));
+    console.assert(!deepEqual(1, 2));
+    console.assert(deepEqual('a', 'a'));
+    console.assert(!deepEqual('a', 'b'));
+    console.assert(!deepEqual('a', 1));
+    console.assert(deepEqual([1], [1]));
+    console.assert(!deepEqual([1], [2]));
+    console.assert(!deepEqual([1], [1,2]));
+    console.assert(deepEqual({a: 1}, {a: 1}));
+    console.assert(!deepEqual({a: 1}, {a: 2}));
+    console.assert(deepEqual({a: [1]}, {a: [1]}));
+    console.assert(!deepEqual({a: [1]}, {a: [2]}));
+    console.assert(!deepEqual({a: [1]}, {b: [1]}));
+    console.assert(!deepEqual({a: [1]}, {a: [1], b: 2}));
+    console.assert(!deepEqual({a: [1], b: 2}, {a: [1]}));
+    console.assert(deepEqual({a: [1], b: 2}, {a: [1], b: 2}));
+}
+runDeepEqualTests();
 
 
 
@@ -309,3 +369,20 @@ function runLevenshteinTests() {
 }
 
 runLevenshteinTests();
+
+
+export function generateUUID() {
+    let d = new Date().getTime();
+    let d2 = ((typeof performance !== 'undefined') && performance.now && (performance.now() * 1000)) || 0;
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        let r = Math.random() * 16;
+        if (d > 0) {
+            r = (d + r) % 16 | 0;
+            d = Math.floor(d / 16);
+        } else {
+            r = (d2 + r) % 16 | 0;
+            d2 = Math.floor(d2 / 16);
+        }
+        return (c == 'x' ? r : (r & 0x7 | 0x8)).toString(16);
+    });
+}

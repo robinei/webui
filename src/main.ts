@@ -1,7 +1,7 @@
 import { errorDescription, asyncDelay } from './util';
 import { Value, mapValue, newProp, Context, Component, FragmentItem,
     H, StaticText, With, If, Match, For, Repeat, Suspense, ErrorBoundary, Lazy } from './core';
-import { Router } from './router';
+import { Router, Outlet } from './router';
 
 
 
@@ -24,7 +24,7 @@ function dumpComponentTree(root: Component): string {
             result.push(')');
         }
         result.push('\n');
-        component.withChildren(c => recurse(c, depth + 1));
+        component.forEachChild(c => recurse(c, depth + 1));
     }
 }
 
@@ -219,17 +219,17 @@ function ErrorFallback(error: unknown, reset: () => void): FragmentItem {
 
 
 
-const root = Router();
-const prefs = root.route('prefs', _ => 'preferences');
-const pref = prefs.route('name:string', args => ['viewing ', args.name]);
-const editPref = pref.route('edit', args => ['editing ', args.name]);
-root.goto('/prefs/foo')
-
+const router = new Router();
+const prefs = router.route('/prefs', _ => H('div', null, 'Preferences:', H('br'), Outlet(), H('br'), 'Footer'));
+const pref = prefs.route('/name:string', args => ['viewing ', args.name]);
+const editPref = pref.route('/edit?language:string', args => ['editing ', args.name]);
+router.init();
 
 new Component(document.body).appendChildren([
     TodoListView(new TodoListModel().addItem('Bake bread')),
     TestComponent(),
-    root.getComponent(),
+    router.component,
+    H('button', { onclick() { router.push('/prefs/bar'); }}, 'Go'),
 ]).mount();
 
 

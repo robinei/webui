@@ -142,6 +142,7 @@ export class Component<N extends Node | null = Node | null> {
     private detached?: boolean;
     private mounted?: boolean;
     private mountListeners?: (() => void)[];
+    private mountedListeners?: (() => void)[];
     private unmountListeners?: (() => void)[];
     private updateListeners?: (() => void | false)[];
 
@@ -152,9 +153,6 @@ export class Component<N extends Node | null = Node | null> {
     private suspenseHandler?: (count: number) => void;
 
     private contextValues?: Map<Context<unknown>, unknown>;
-
-    // override this for components where content should be placed deeper
-    setContent?: (fragment: FragmentItem) => void;
 
     constructor(readonly node: N, private readonly name?: string) {}
 
@@ -242,16 +240,6 @@ export class Component<N extends Node | null = Node | null> {
         }
     }
 
-    private maybeWrapAsync(func: () => void | Promise<void>): (() => void) {
-        const self = this;
-        return function asyncErrorHandler() {
-            const result = func();
-            if (result instanceof Promise) {
-                result.catch(e =>  self.injectError(e));
-            }
-        };
-    }
-
     addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: Component<N>, ev: GlobalEventHandlersEventMap[K]) => any): Component<N> {
         const self = this;
         if (!self.node) {
@@ -270,8 +258,8 @@ export class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addMountListener(listener: (this: Component<N>) => void | Promise<void>): Component<N> {
-        const boundListener = this.maybeWrapAsync(listener.bind(this));
+    addMountListener(listener: (this: Component<N>) => void): Component<N> {
+        const boundListener = listener.bind(this);
         if (this.mountListeners) {
             this.mountListeners.push(boundListener);
         } else {
@@ -287,8 +275,25 @@ export class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addUnmountListener(listener: (this: Component<N>) => void | Promise<void>): Component<N> {
-        const boundListener = this.maybeWrapAsync(listener.bind(this));
+    addMountedListener(listener: (this: Component<N>) => void): Component<N> {
+        const boundListener = listener.bind(this);
+        if (this.mountedListeners) {
+            this.mountedListeners.push(boundListener);
+        } else {
+            this.mountedListeners = [boundListener];
+        }
+        if (this.mounted) {
+            try {
+                boundListener();
+            } catch (e) {
+                this.injectError(e);
+            }
+        }
+        return this;
+    }
+
+    addUnmountListener(listener: (this: Component<N>) => void): Component<N> {
+        const boundListener = listener.bind(this);
         if (this.unmountListeners) {
             this.unmountListeners.push(boundListener);
         } else {
@@ -438,8 +443,9 @@ export class Component<N extends Node | null = Node | null> {
             throw new Error('component is already attached to a component');
         }
 
+        let pendingMountedCalls: Component[] | undefined;
         if (this.mounted && !child.mounted) {
-            child.mount();
+            pendingMountedCalls = child.doMount();
         }
 
         if (before) {
@@ -484,6 +490,10 @@ export class Component<N extends Node | null = Node | null> {
             this.injectError(e);
         }
 
+        if (pendingMountedCalls) {
+            this.signalMounted(pendingMountedCalls);
+        }
+
         return this;
     }
 
@@ -522,6 +532,11 @@ export class Component<N extends Node | null = Node | null> {
             child.unmount();
         }
         
+        return this;
+    }
+
+    removeFromParent(): Component<N> {
+        this.parent?.removeChild(this);
         return this;
     }
 
@@ -574,7 +589,7 @@ export class Component<N extends Node | null = Node | null> {
         return children;
     }
 
-    withChildren(handler: (child: Component) => void): Component<N> {
+    forEachChild(handler: (child: Component) => void): Component<N> {
         for (let c = this.firstChild; c; c = c.nextSibling) {
             handler(c);
         }
@@ -593,6 +608,27 @@ export class Component<N extends Node | null = Node | null> {
     }
 
     mount(): Component<N> {
+        const pendingMountedCalls = this.doMount();
+        this.signalMounted(pendingMountedCalls);
+        return this;
+    }
+    
+    private signalMounted(components: Component[]): void {
+        for (const component of components) {
+            if (component.mountedListeners) {
+                for (const listener of component.mountedListeners) {
+                    try {
+                        listener();
+                    } catch (e) {
+                        component.injectError(e);
+                    }
+                }
+            }
+        }
+    }
+
+    private doMount(): Component[] {
+        const pendingMountedCalls: Component[] = [];
         const stack: Component[] = [this];
         for (;;) {
             const component = stack.pop();
@@ -612,9 +648,13 @@ export class Component<N extends Node | null = Node | null> {
                         component.injectError(e);
                     }
                     if (!component.mounted) {
-                        return this; // in case a mount handler caused the tree to be (synchronously) unmounted
+                        return []; // in case a mount handler caused the tree to be (synchronously) unmounted
                     }
                 }
+            }
+
+            if (component.mountedListeners) {
+                pendingMountedCalls.push(component);
             }
 
             for (let c = component.lastChild; c; c = c.prevSibling) {
@@ -623,7 +663,7 @@ export class Component<N extends Node | null = Node | null> {
         }
         
         this.update(); // immediately update a mounted tree
-        return this;
+        return pendingMountedCalls;
     }
 
     unmount(): Component<N> {
@@ -859,7 +899,7 @@ let touchedComponents = 0;
 
 function componentTreeSize(component: Component): number {
     let count = 1;
-    component.withChildren(c => {
+    component.forEachChild(c => {
         count += componentTreeSize(c);
     });
     return count;
