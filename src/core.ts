@@ -175,7 +175,8 @@ export class Component<N extends Node | null = Node | null> {
     }
 
     injectError(error: unknown): void {
-        for (let c: Component | undefined = this; c; c = c.parent) {
+        let c: Component = this;
+        for (;;) {
             try {
                 if (c.errorHandler?.(error) === true) {
                     return;
@@ -184,9 +185,13 @@ export class Component<N extends Node | null = Node | null> {
                 console.error(`failed to handle error: ${errorDescription(error)}`);
                 error = e;
             }
+            if (!c.parent) {
+                c.unhandledError = error;
+                console.error(`unhandled error: ${errorDescription(error)}`);
+                return;
+            }
+            c = c.parent;
         }
-        this.getRoot().unhandledError = error;
-        console.error(`unhandled error: ${errorDescription(error)}`);
     }
 
     setErrorHandler(handler: (this: Component<N>, error: unknown) => boolean): Component<N> {
@@ -472,8 +477,7 @@ export class Component<N extends Node | null = Node | null> {
         child.parent = this;
 
         if (child.suspenseCount && !child.suspenseHandler) {
-            // component doesn't contribute to our count when it has a handler.
-            // use pre-mount count because if mount changed the count then that diff will already have been added here
+            // child component doesn't have a suspense handler and thus will spill its suspense count up to us.
             this.addSuspenseCount(child.suspenseCount);
         }
         
@@ -524,7 +528,7 @@ export class Component<N extends Node | null = Node | null> {
         }
 
         if (child.suspenseCount && !child.suspenseHandler) {
-            // we don't contribute to parent count when we have a handler
+            // child component doesn't have a suspense handler and thus will have spilled its suspense count up to us, so we must subtract it.
             this.addSuspenseCount(-child.suspenseCount);
         }
 

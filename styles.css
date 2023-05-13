@@ -1,0 +1,6 @@
+.todoItem:nth-child(even) {
+    background-color: aqua;
+}
+.todoItem:nth-child(odd) {
+    background-color: white;
+}
