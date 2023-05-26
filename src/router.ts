@@ -43,7 +43,7 @@ const test: Test = {} as any;
 
 
 
-type PathMatcher = (path: string, args: { [key: string]: unknown }) => string;
+type PathMatcher = (path: string, args: { [key: string]: unknown }) => string | false;
 
 function parsePathSpec(pathSpec: string): PathMatcher {
     if (!pathSpec) {
@@ -56,7 +56,7 @@ function parsePathSpec(pathSpec: string): PathMatcher {
             if (path.startsWith('/')) {
                 return parseRest(path.substring(1), args);
             }
-            return path;
+            return false;
         };
     }
 
@@ -74,7 +74,7 @@ function parsePathSpec(pathSpec: string): PathMatcher {
             if (path.startsWith(fragment)) {
                 return parseRest(path.substring(fragment.length), args);
             }
-            return path;
+            return false;
         };
     }
 
@@ -98,7 +98,7 @@ function parsePathSpec(pathSpec: string): PathMatcher {
             args[key] = value;
             return parseRest(path.substring(prefix.length), args);
         }
-        return path;
+        return false;
     };
 }
 
@@ -131,15 +131,15 @@ function runParsePathSpecTests() {
     runTest('/', '/foo', 'foo', {});
     runTest('/foo', '/foo', '', {});
     runTest('/foo:number', '/123', '', {foo: 123});
-    runTest('/foo:number', '/nan', 'nan', {});
+    runTest('/foo:number', '/nan', false, {});
     runTest('/foo:number/bar:string', '/123/str', '', {foo: 123, bar: 'str'});
     runTest('/prefix/foo:number/bar:string', '/prefix/123/str', '', {foo: 123, bar: 'str'});
 
-    function runTest(spec: string, path: string, expectedRemainder: string, expectedArgs: { [key: string]: unknown }): void {
+    function runTest(spec: string, path: string, expectedResult: string | false, expectedArgs: { [key: string]: unknown }): void {
         const matcher = parsePathSpec(spec);
         const args: { [key: string]: unknown } = {};
-        const remainder = matcher(path, args);
-        console.assert(remainder === expectedRemainder);
+        const result = matcher(path, args);
+        console.assert(result === expectedResult);
         console.assert(deepEqual(args, expectedArgs));
     }
 }
@@ -170,7 +170,7 @@ export class Route<Args> {
     private args: { [key: string]: unknown } = {};
 
     private matchedSubRoute?: Route<any>;
-    private outletSubRoute?: Route<any>;
+    private outletSubRoute?: Route<any>; // the sub-route whose component we have currently mounted in our fragment's Outlet
     private outlet?: Component;
 
     constructor(readonly pathSpec: string, private readonly makeFragment: (args: FunctionsOf<Args>) => FragmentItem) {
@@ -191,27 +191,22 @@ export class Route<Args> {
     protected tryMatch(path: string, parentArgs?: { [key: string]: unknown }): boolean {
         const args = { ...parentArgs };
         const restOfPath = this.matcher(path, args);
-        if (restOfPath === path && this.pathSpec) {
+        if (restOfPath === false) {
             return false;
         }
         
         this.args = args;
-        
-        if (!this.fragmentCreated) {
-            const argFuncs: any = {};
-            for (const key in this.args) {
-                argFuncs[key] = () => this.args[key];
-            }
-            this.component.appendChildren(flattenFragment(this.makeFragment(argFuncs)));
-            this.fragmentCreated = true;
-        }
 
         for (const route of this.subRoutes) {
             if (route.tryMatch(restOfPath, args)) {
                 this.matchedSubRoute = route;
-                this.maybeFillOutlet();
-                break;
+                this.update();
+                return true;
             }
+        }
+
+        if (restOfPath) {
+            return false; // unmatched path remnant
         }
 
         return true;
@@ -223,15 +218,25 @@ export class Route<Args> {
                 throw new Error('outlet already set');
             }
             this.outlet = outlet;
-            this.maybeFillOutlet();
+            this.update();
         }
     }
 
-    private maybeFillOutlet(): void {
+    private update(): void {
+        if (!this.fragmentCreated) {
+            const argFuncs: any = {};
+            for (const key in this.args) {
+                argFuncs[key] = () => this.args[key];
+            }
+            this.component.appendChildren(flattenFragment(this.makeFragment(argFuncs)));
+            this.fragmentCreated = true;
+        }
+
         if (this.outlet) {
             if (this.matchedSubRoute !== this.outletSubRoute) {
                 this.outlet.clear();
                 if (this.matchedSubRoute) {
+                    this.matchedSubRoute.update();
                     this.outlet.appendChild(this.matchedSubRoute.component);
                 }
                 this.outletSubRoute = this.matchedSubRoute;
@@ -242,8 +247,8 @@ export class Route<Args> {
 
 
 export class Router extends Route<{}> {
-    constructor() {
-        super('', () => Outlet());
+    constructor(makeFragment?: () => FragmentItem) {
+        super('', makeFragment ?? (() => Outlet()));
     }
 
     init(): boolean {

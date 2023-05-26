@@ -5,31 +5,6 @@ import { Router, Outlet } from './router';
 
 
 
-function dumpComponentTree(root: Component): string {
-    const result: string[] = [];
-    recurse(root, 0);
-    return result.join('');
-    
-    function recurse(component: Component, depth: number) {
-        for (let i = 0; i < depth; ++i) {
-            result.push('  ');
-        }
-        result.push(component.getName());
-        if (component.node instanceof Text) {
-            result.push(': ');
-            result.push(JSON.stringify(component.node.nodeValue));
-        } else if (!component.hasChildren() && component.node?.textContent) {
-            result.push(' (textContent = ');
-            result.push(JSON.stringify(component.node.textContent));
-            result.push(')');
-        }
-        result.push('\n');
-        component.forEachChild(c => recurse(c, depth + 1));
-    }
-}
-
-
-
 interface TodoItemModel {
     title: string;
     done: boolean;
@@ -90,15 +65,6 @@ function TodoItemView(item: TodoItemModel) {
 function TodoListView(model: TodoListModel) {
     const input = H('input');
     return H('div', null,
-        H('button', {
-            onclick() {
-                console.log(dumpComponentTree(this.getRoot()));
-            }
-        }, 'Print tree'),
-        H('button', {
-            onclick() {}
-        }, 'Update'),
-        H('br'),
         'Todo:',
         H('br'),
         input,
@@ -124,6 +90,11 @@ function TodoListView(model: TodoListModel) {
     );
 }
 
+function TodoComponent() {
+    const model = new TodoListModel().addItem('Bake bread');
+    return TodoListView(model);
+}
+
 
 
 
@@ -132,8 +103,7 @@ function TodoListView(model: TodoListModel) {
 
 const TestContext = new Context<string>('TestContext');
 
-
-function TestComponent() {
+function TestComponent(): Component {
     return ErrorBoundary(ErrorFallback, function tryTestComponent() {
         const [cb1, checked1] = CheckBox();
         const [cb2, checked2] = CheckBox();
@@ -149,10 +119,7 @@ function TestComponent() {
         });
 
         return Suspense('Loading...',
-            cb1, H('br'),
-            cb2, H('br'),
-            cb3, H('br'),
-            cb4, H('br'),
+            cb1, cb2, cb3, cb4,
             If(checked1,
                 H('span', null, 'a')),
             If(checked2,
@@ -218,20 +185,162 @@ function ErrorFallback(error: unknown, reset: () => void): FragmentItem {
 
 
 
+function Link(path: string, fragment: FragmentItem) {
+    return H('a', {
+        href: path,
+        onclick(ev: MouseEvent) {
+            ev.preventDefault();
+            router.push(path);
+        }
+    }, fragment);
+}
 
-const router = new Router();
-const prefs = router.route('/prefs', _ => H('div', null, 'Preferences:', H('br'), Outlet(), H('br'), 'Footer'));
-const pref = prefs.route('/name:string', args => ['viewing ', args.name]);
-const editPref = pref.route('/edit?language:string', args => ['editing ', args.name]);
+function NavBar() {
+    return H('div', null,
+        Link('/test', 'Test'),
+        ' | ',
+        Link('/todo', 'Todo'),
+        ' | ',
+        Link('/prefs', 'Prefs'),
+        ' | ',
+        H('button', {
+            onclick() {
+                console.log(dumpComponentTree(this.getRoot()));
+            }
+        }, 'Print tree'),
+        ' | ',
+        H('button', {
+            onclick() {}
+        }, 'Update')
+    );
+}
+
+function RootPage() {
+    return H('div', null,
+        NavBar(),
+        H('br'),
+        Outlet()
+    );
+}
+
+
+
+
+
+
+interface Preference {
+    name: string;
+    value: string;
+}
+
+const preferences: Preference[] = [
+    { name: 'username', value: 'guest' },
+    { name: 'password', value: 'guest' },
+];
+
+function findPref(name: string) {
+    for (const pref of preferences) {
+        if (pref.name === name) {
+            return pref;
+        }
+    }
+    return null;
+}
+
+function getPreference(name: string) {
+    return findPref(name)?.value ?? '';
+}
+
+function setPreference(name: string, value: string) {
+    const pref = findPref(name);
+    if (pref) {
+        pref.value = value;
+    } else {
+        preferences.push({ name, value });
+    }
+}
+
+function PreferencesComponent() {
+    return H('div', null,
+        'Preferences:',
+        H('hr'),
+        Outlet(),
+        H('hr'),
+    );
+}
+
+function PreferencesListComponent() {
+    return H('ul', null,
+        For(() => preferences, pref =>
+            H('li', null,
+                pref.name,
+                ': ',
+                () => pref.value,
+                ' ',
+                Link(`/prefs/${pref.name}`, 'edit'))));
+}
+
+function EditPreferenceComponent({name}: {name: () => string}) {
+    const input = H('input', {
+        value: () => getPreference(name()),
+        oninput() {
+            setPreference(name(), input.node.value);
+        }
+    });
+    return H('div', null,
+        'Editing ',
+        name,
+        H('br'),
+        input,
+        Link('/prefs', 'done'));
+}
+
+
+
+
+
+const router = new Router(RootPage);
+{
+    router.route('/test', TestComponent);
+    
+    router.route('/todo', TodoComponent);
+
+    const prefs = router.route('/prefs', PreferencesComponent);
+    {
+        prefs.route('/name:string', EditPreferenceComponent);
+        prefs.route('', PreferencesListComponent);
+    }
+}
 router.init();
 
-new Component(document.body).appendChildren([
-    TodoListView(new TodoListModel().addItem('Bake bread')),
-    TestComponent(),
-    router.component,
-    H('button', { onclick() { router.push('/prefs/bar'); }}, 'Go'),
-]).mount();
+new Component(document.body).appendChild(router.component).mount();
 
+
+
+
+
+function dumpComponentTree(root: Component): string {
+    const result: string[] = [];
+    dumpComponent(root, 0);
+    return result.join('');
+    
+    function dumpComponent(component: Component, depth: number) {
+        for (let i = 0; i < depth; ++i) {
+            result.push('  ');
+        }
+        if (component.node instanceof Text) {
+            result.push(JSON.stringify(component.node.nodeValue));
+        } else if (!component.hasChildren() && component.node?.textContent) {
+            result.push(component.getName());
+            result.push(' ');
+            result.push(JSON.stringify(component.node.textContent));
+        } else {
+            result.push(component.getName());
+        }
+        result.push('\n');
+        component.forEachChild(c => dumpComponent(c, depth + 1));
+    }
+}
 
 
 function runBenchmarks() {
@@ -266,40 +375,5 @@ function runBenchmarks() {
         topDiv.appendChild(innerDiv);
         topDiv.appendChild(document.createTextNode('baz'));
     });
-    
-    
-    document.write("Done");
 }
-
-
-async function asyncTest() {
-    async function* testGenerator(): AsyncGenerator<number, void, unknown> {
-        try {
-            for(let i = 0; ; ++i) {
-                console.log("iter");
-                await asyncDelay(1000);
-                yield i;
-            }
-        } finally {
-            console.log("finished");
-        }
-    }
-    
-    const gen = testGenerator();
-    for (let i = 0; i < 5; ++i) {
-        const x = await gen.next();
-        if (!x.done) {
-            console.log(x.value);
-        }
-    }
-    console.log("BREAK");
-    await asyncDelay(4000);
-    console.log("BROKE");
-    for (let i = 0; i < 5; ++i) {
-        const x = await gen.next();
-        if (!x.done) {
-            console.log(x.value);
-        }
-    }
-    gen.return();
-}
+runBenchmarks();

@@ -99,6 +99,7 @@ type EventAttributes<N> = {
 
 type ComponentAttributes<N extends Node | null> = {
     onmount?: (this: Component<N>) => void;
+    onmounted?: (this: Component<N>) => void;
     onunmount?: (this: Component<N>) => void;
     onupdate?: (this: Component<N>) => void | false;
 };
@@ -156,7 +157,7 @@ export class Component<N extends Node | null = Node | null> {
 
     constructor(readonly node: N, private readonly name?: string) {}
 
-    getName(): string { return this.name ?? this.node?.nodeName ?? '#anon'; }
+    getName(): string { return this.name ?? this.node?.nodeName ?? 'Component'; }
 
     getParent(): Component | undefined { return this.parent; }
     getFirstChild(): Component | undefined { return this.firstChild; }
@@ -382,7 +383,7 @@ export class Component<N extends Node | null = Node | null> {
         return self;
     }
 
-    setAttributes(attributes: Attributes<N> | null): Component<N> {
+    setAttributes(attributes: Attributes<N>): Component<N> {
         for (const name in attributes) {
             const value = (attributes as any)[name];
 
@@ -393,6 +394,9 @@ export class Component<N extends Node | null = Node | null> {
                     break;
                 case 'onmount':
                     this.addMountListener(value);
+                    break;
+                case 'onmounted':
+                    this.addMountedListener(value);
                     break;
                 case 'onunmount':
                     this.addUnmountListener(value);
@@ -979,7 +983,7 @@ export function H<K extends keyof HTMLElementTagNameMap>(
     attributes: Attributes<HTMLElementTagNameMap[K]> | null = null,
     ...children: FragmentItem[]
 ): Component<HTMLElementTagNameMap[K]>  {
-    const component = new Component(document.createElement(tag), tag)
+    const component = new Component(document.createElement(tag))
     if (attributes) {
         component.setAttributes(attributes);
     }
@@ -999,12 +1003,12 @@ export function H<K extends keyof HTMLElementTagNameMap>(
 
 
 export function StaticText(value: string): Component<Text> {
-    return new Component(document.createTextNode(value), '#text');
+    return new Component(document.createTextNode(value));
 }
 
 export function DynamicText(value: Value<Primitive>): Component<Text> {
     const node = document.createTextNode('');
-    return new Component(node, '#text').addValueWatcher(value, function onDynamicTextChanged(primitive) {
+    return new Component(node).addValueWatcher(value, function onDynamicTextChanged(primitive) {
         node.nodeValue = primitive?.toString() ?? '';
     });
 }
