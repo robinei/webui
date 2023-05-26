@@ -1,4 +1,4 @@
-import { Component, Context, FragmentItem, flattenFragment } from "./core";
+import { Component, Context, FragmentItem, flattenFragment, H } from "./core";
 import { deepEqual } from "./util";
 
 
@@ -188,7 +188,7 @@ export class Route<Args> {
         return route;
     }
 
-    protected tryMatch(path: string, parentArgs?: { [key: string]: unknown }): boolean {
+    tryMatch(path: string, parentArgs?: { [key: string]: unknown }): boolean {
         const args = { ...parentArgs };
         const restOfPath = this.matcher(path, args);
         if (restOfPath === false) {
@@ -251,23 +251,53 @@ export class Router extends Route<{}> {
         super('', makeFragment ?? (() => Outlet()));
     }
 
-    init(): boolean {
+    init(): void {
         this.component.addMountListener(this.onMountRouter);
         this.component.addUnmountListener(this.onUnmountRouter);
-        return this.tryMatch(document.location.pathname, {});
+        this.tryMatch(document.location.pathname, {});
     }
 
-    push(path: string): boolean {
-        history.pushState(null, '', path);
-        return this.tryMatch(path);
-    }
+    private onMountRouter = () => {
+        window.addEventListener('popstate', this.onPopState);
+        mountedRouters.push(this);
+    };
 
-    replace(path: string): boolean {
-        history.replaceState(null, '', path);
-        return this.tryMatch(path);
-    }
+    private onUnmountRouter = () => {
+        const index = mountedRouters.indexOf(this);
+        if (index >= 0) {
+            mountedRouters.splice(index, 1);
+        }
+        window.removeEventListener('popstate', this.onPopState);
+    };
 
-    private onMountRouter = () => window.addEventListener('popstate', this.onPopState);
-    private onUnmountRouter = () => window.removeEventListener('popstate', this.onPopState);
-    private onPopState = (_: PopStateEvent) => this.tryMatch(document.location.pathname);
+    private onPopState = (_: PopStateEvent) => {
+        this.tryMatch(document.location.pathname);
+    };
+}
+
+
+const mountedRouters: Router[] = [];
+
+export function pushPath(path: string): void {
+    history.pushState(null, '', path);
+    for (const r of mountedRouters) {
+        r.tryMatch(path);
+    }
+}
+
+export function replacePath(path: string): void {
+    history.replaceState(null, '', path);
+    for (const r of mountedRouters) {
+        r.tryMatch(path);
+    }
+}
+
+export function Link(path: string, fragment: FragmentItem) {
+    return H('a', {
+        href: path,
+        onclick(ev: MouseEvent) {
+            ev.preventDefault();
+            pushPath(path);
+        }
+    }, fragment);
 }
