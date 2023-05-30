@@ -1,14 +1,21 @@
 {
     "compilerOptions": {
-        "module": "amd",
-        "target": "ES2022",
-        "lib": ["ES2022", "ES2015.Core", "DOM"],
+        "module": "esnext",
+        "target": "esnext",
+        "lib": ["esnext", "ES2015.Core", "DOM"],
+
+        "moduleResolution": "bundler",
+        "allowImportingTsExtensions": true,
+        "moduleDetection": "force",
+        "noEmit": true,
+
         "strict": true,
         "noImplicitReturns": true,
         "forceConsistentCasingInFileNames": true,
         "noUncheckedIndexedAccess": true,
+        "skipLibCheck": true,
+        
         "sourceMap": true,
-        "outFile": "bundle.js",
         "rootDirs": ["src"]
     }
 }
