@@ -4,6 +4,7 @@ import { Router, Outlet, Link } from './routing';
 import { PreferencesPage, EditPreferencePage, PreferencesListPage } from './pages/prefs';
 import { TestPage } from './pages/test';
 import { TodoPage } from './pages/todo';
+import { BenchmarkPage } from './pages/bench';
 
 
 function NavBar() {
@@ -13,6 +14,8 @@ function NavBar() {
         Link('/todo', 'Todo'),
         ' | ',
         Link('/prefs', 'Prefs'),
+        ' | ',
+        Link('/bench', 'Benchmark'),
         ' | ',
         H('button', {
             onclick() {
@@ -53,6 +56,8 @@ const router = new Router(RootPage);
         prefs.route('/name:string', EditPreferencePage);
         prefs.route('', PreferencesListPage);
     }
+    
+    router.route('/bench', BenchmarkPage);
 }
 router.init();
 
@@ -87,38 +92,3 @@ function dumpComponentTree(root: Component): string {
     }
 }
 
-
-function runBenchmarks() {
-    function benchmark(desc: string, iters: number, func: () => void): void {
-        console.time(desc);
-        try {
-            for (let i = 0; i < iters; ++i) {
-                func();
-            }
-        } finally {
-            console.timeEnd(desc);
-        }
-    }
-    
-    const N = 10000;
-    
-    benchmark("Component", N, () => {
-        H('div', null,
-            'foo',
-            H('br'),
-            H('div', null, 'bar'),
-            'baz'
-        );
-    });
-    
-    benchmark("Vanilla", N, () => {
-        const topDiv = document.createElement('div');
-        topDiv.appendChild(document.createTextNode('foo'));
-        topDiv.appendChild(document.createElement('br'));
-        const innerDiv = document.createElement('div');
-        innerDiv.textContent = 'bar';
-        topDiv.appendChild(innerDiv);
-        topDiv.appendChild(document.createTextNode('baz'));
-    });
-}
-runBenchmarks();

@@ -33,6 +33,69 @@ export function asyncDelay(timeoutMillis: number): Promise<void> {
     });
 }
 
+export class Deferred<T> {
+    resolve!: (value: T | PromiseLike<T>) => void;
+    reject!: (reason?: any) => void;
+    readonly promise = new Promise<T>((resolve, reject) => {
+        this.resolve = resolve;
+        this.reject = reject;
+    });
+}
+
+export class Semaphore {
+    readonly maxCount: number;
+    private readonly waiters: Deferred<void>[] = [];
+
+    constructor(private count = 1) {
+        this.maxCount = count;
+    }
+
+    tryAcquire(): boolean {
+        if (this.count > 0) {
+            --this.count;
+            return true;
+        }
+        return false;
+    }
+
+    acquire(): Promise<void> {
+        if (this.count > 0) {
+            --this.count;
+            return Promise.resolve();
+        }
+        var deferred = new Deferred<void>()
+        this.waiters.push(deferred);
+        return deferred.promise;
+    }
+
+    release(): void {
+        if (this.count === this.maxCount) {
+            throw new Error('too many calls to release()');
+        }
+        if (this.waiters.length > 0) {
+            if (this.count !== 0) {
+                throw new Error('count should be 0');
+            }
+            const waiter = this.waiters.shift()!;
+            waiter.resolve();
+        } else {
+            ++this.count;
+        }
+    }
+
+    async withAcquired(func: () => void | Promise<void>): Promise<void> {
+        await this.acquire();
+        try {
+            const result = func();
+            if (result instanceof Promise) {
+                await result;
+            }
+        } finally {
+            this.release();
+        }
+    }
+}
+
 
 export function isPlainObject(value: unknown): value is { [key: string]: unknown } {
     return !!value && Object.getPrototypeOf(value) === Object.prototype;
