@@ -51,7 +51,10 @@ export function PreferencesListPage() {
                 ': ',
                 () => pref.value,
                 ' ',
-                Link(`/prefs/${pref.name}`, 'edit'))));
+                Link(`/prefs/${pref.name}`, 'edit'),
+            )
+        )
+    );
 }
 
 export function EditPreferencePage({name}: {name: () => string}) {
@@ -66,5 +69,6 @@ export function EditPreferencePage({name}: {name: () => string}) {
         name,
         H('br'),
         input,
-        Link('/prefs', 'done'));
+        Link('/prefs', 'done'),
+    );
 }

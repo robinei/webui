@@ -51,8 +51,8 @@ const router = new Router(RootPage);
 
     router.route('/', DefaultPage);
 
-    const prefs = router.route('/prefs', PreferencesPage);
     {
+        const prefs = router.route('/prefs', PreferencesPage);
         prefs.route('/name:string', EditPreferencePage);
         prefs.route('', PreferencesListPage);
     }

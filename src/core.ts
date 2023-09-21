@@ -124,9 +124,9 @@ export class Context<T> {
                 return;
             }
             lastValue = value;
-            const body = flattenFragment(bodyFunc(value));
+            const fragment = bodyFunc(value);
             component.clear();
-            component.appendChildren(body);
+            component.appendFragment(fragment);
         });
         return component;
     }
@@ -752,11 +752,11 @@ export class Component<N extends Node | null = Node | null> {
             return this.node;
         }
         for (let p = this.parent; p; p = p.parent) {
-            if (p.node) {
-                return p.node;
-            }
             if (p.detached) {
                 break;
+            }
+            if (p.node) {
+                return p.node;
             }
         }
         return null;
@@ -934,41 +934,52 @@ function setElementAttribute(elem: Element, name: string, value: Primitive): voi
 
 
 
-export function iterateFragment(fragment: FragmentItem, handler: (component: Component) => void, returnLastText = false): string {
-    let lastText = '';
+export function iterateFragment(fragment: FragmentItem, handler: (component: Component) => void, returnLastText = false): string | undefined {
+    let text: string | undefined;
     next(fragment);
-    if (!returnLastText && lastText.length > 0) {
-        handler(StaticText(lastText));
-        return '';
+    if (text && !returnLastText) {
+        handler(StaticText(text));
+        return undefined;
     }
-    return lastText;
+    return text;
 
-    function next(fragment: FragmentItem): void {
-        if (fragment === null || fragment === undefined) {
+    function next(item: FragmentItem): void {
+        if (item === null || item === undefined) {
             // ignore
-        } else if (fragment instanceof Component) {
-            if (lastText) {
-                handler(StaticText(lastText));
-                lastText = '';
+        } else if (item instanceof Component) {
+            if (text) {
+                handler(StaticText(text));
+                text = undefined;
             }
-            handler(fragment);
-        } else if (Array.isArray(fragment)) {
-            for (const item of fragment) {
-                next(item);
+            handler(item);
+        } else if (Array.isArray(item)) {
+            for (const it of item) {
+                next(it);
             }
         } else {
-            if (isStaticValue(fragment)) {
-                lastText += fragment?.toString() ?? '';
-            } else {
-                if (lastText) {
-                    handler(StaticText(lastText));
-                    lastText = '';
+            if (isStaticValue(item)) {
+                let str = '';
+                switch (typeof item) {
+                case 'string': str = item; break;
+                case 'number': str = item.toString(); break;
+                case 'boolean': str = item ? 'true' : 'false'; break;
                 }
-                handler(DynamicText(fragment));
+                if (text) {
+                    text += str;
+                } else {
+                    text = str;
+                }
+            } else {
+                if (text) {
+                    handler(StaticText(text));
+                    text = undefined;
+                }
+                handler(DynamicText(item));
             }
         }
     }
 }
+
 
 
 export function flattenFragment(fragment: FragmentItem): Component[] {
@@ -982,7 +993,7 @@ export function H<K extends keyof HTMLElementTagNameMap>(
     tag: K,
     attributes: Attributes<HTMLElementTagNameMap[K]> | null = null,
     ...children: FragmentItem[]
-): Component<HTMLElementTagNameMap[K]>  {
+): Component<HTMLElementTagNameMap[K]> {
     const component = new Component(document.createElement(tag))
     if (attributes) {
         component.setAttributes(attributes);
@@ -993,7 +1004,7 @@ export function H<K extends keyof HTMLElementTagNameMap>(
             if (component.hasChildren()) {
                 component.appendChild(StaticText(lastText));
             } else {
-                // can only set textContent if there were no other children
+                // only set textContent if there were no other children
                 component.node.textContent = lastText;
             }
         }
@@ -1014,10 +1025,7 @@ export function DynamicText(value: Value<Primitive>): Component<Text> {
 }
 
 
-export function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null> | Component[] {
-    if (isStaticValue(value)) {
-        return flattenFragment(mapper(value));
-    }
+export function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null> {
     const component = new Component(null, name ?? 'With');
     component.addValueWatcher(value, function evalWith(v) {
         component.replaceChildren(flattenFragment(mapper(v)));
@@ -1025,19 +1033,19 @@ export function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: 
     return component;
 }
 
-export function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> | Component[] {
+export function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> {
     return With(condValue, function evalIf(cond) { return cond ? thenFragment : elseFragment; }, 'If');
 }
 
-export function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[] {
+export function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> {
     return With(condValue, function evalWhen(cond) { return cond ? bodyFragment : null; }, 'When');
 }
 
-export function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> | Component[] {
+export function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> {
     return With(condValue, function evalUnless(cond) { return cond ? null : bodyFragment; }, 'Unless');
 }
 
-export function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null> | Component[] {
+export function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null> {
     return With(value, function evalMatch(v: T) {
         for (const [matcher, ...fragment] of cases) {
             if (typeof matcher === 'function' ? matcher(v) : v === matcher) {
@@ -1047,15 +1055,11 @@ export function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: 
         return null;
     }, 'Match');
 }
-export function Else<T>(_: T): true {
+export function Else(_: unknown): true {
     return true;
 }
 
-export function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> | Component[] {
-    if (isStaticValue(itemsValue)) {
-        return flattenFragment(itemsValue.map(renderFunc));
-    }
-
+export function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> {
     const keyOf = keyFunc ?? (item => item);
     let fragmentMap = new Map<unknown, Component[]>();
 
@@ -1097,15 +1101,7 @@ export function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => Fragment
     }
 }
 
-export function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component<null> | Component[] {
-    if (isStaticValue(countValue)) {
-        const fragment: FragmentItem[] = [];
-        for (let i = 0; i < countValue; ++i) {
-            fragment.push(itemFunc(i));
-        }
-        return flattenFragment(fragment);
-    }
-    
+export function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component<null> {
     let fragmentSizes: number[] = [];
     const component = new Component(null, 'Repeat');
     component.addValueWatcher(countValue, function onCountChanged(count) {
@@ -1139,9 +1135,9 @@ export function ErrorBoundary(
     function onError(error: unknown): boolean {
         console.error(`Error caught by ErrorBoundary: ${errorDescription(error)}`);
         try {
-            const fragment = flattenFragment(boundFallback(error, initContent));
+            const fragment = boundFallback(error, initContent);
             component.clear();
-            component.appendChildren(fragment);
+            component.appendFragment(fragment);
         } catch (e) {
             const msg = `Error in ErrorBoundary fallback: ${(errorDescription(e))}`;
             console.error(msg);
@@ -1153,9 +1149,9 @@ export function ErrorBoundary(
 
     function initContent(): void {
         try {
-            const fragment = flattenFragment(boundBody());
+            const fragment = boundBody();
             component.clear();
-            component.appendChildren(fragment);
+            component.appendFragment(fragment);
         } catch (e) {
             onError(e);
         }
@@ -1196,11 +1192,13 @@ export function Lazy(body: (this: Component<null>) => FragmentItem | Promise<Fra
         loaded = true;
         const bodyResult = boundBody();
         if (!(bodyResult instanceof Promise)) {
+            component.clear();
             component.appendFragment(bodyResult);
             return;
         }
         component.trackAsyncLoad(async function loadLazyBody() {
             const loadedBody = await bodyResult;
+            component.clear(); // clear to support adding children that will be displayed while loading
             component.appendFragment(loadedBody);
         });
     });

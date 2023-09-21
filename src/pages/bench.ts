@@ -14,24 +14,26 @@ function benchmark(iters: number, func: () => void): number {
 const lock = new Semaphore();
 
 function Benchmark(desc: string, iters: number, func: () => void) {
-    return Lazy(async () => {
-        await lock.acquire();
-        await asyncDelay(10);
+    return [`${desc}: `, Lazy(async () => {
+        await lock.acquire(); // ensure that they will start one after another (with 10 ms delay between each)
         try {
+            await asyncDelay(10);
             const t = benchmark(iters, func);
-            return `${desc}: ${t} ms`;
+            return ` ${t} ms`;
         } finally {
             lock.release();
         }
-    });
+    }).appendFragment('...')];
 }
 
 export function BenchmarkPage() {
-    const N = 100000;
+    const domIters = 100000;
+    const argIters = 10000000;
+
     return H('div', null,
         'Benchmark results:',
-        H('br'),
-        Benchmark('Component', N, () => {
+        H('hr'),
+        Benchmark('Component', domIters, () => {
             H('div', null,
                 'foo',
                 H('br'),
@@ -40,7 +42,7 @@ export function BenchmarkPage() {
             );
         }),
         H('br'),
-        Benchmark("Vanilla", N, () => {
+        Benchmark("Vanilla", domIters, () => {
             const topDiv = document.createElement('div');
             topDiv.appendChild(document.createTextNode('foo'));
             topDiv.appendChild(document.createElement('br'));
@@ -48,5 +50,33 @@ export function BenchmarkPage() {
             innerDiv.textContent = 'bar';
             topDiv.appendChild(innerDiv);
             topDiv.appendChild(document.createTextNode('baz'));
-        }));
+        }),
+        H('hr'),
+        Benchmark("Rest", argIters, () => {
+            testRest(1,2,3,4,5,6,7,8,9);
+        }),
+        H('br'),
+        Benchmark("Arguments", argIters, () => {
+            testArguments(1,2,3,4,5,6,7,8,9);
+        }),
+    );
+}
+
+
+function testArguments(foo: number, ...numbers: number[]): number;
+function testArguments() {
+    var sum = 0;
+    for (var i = 1; i < arguments.length; ++i) {
+      sum += arguments[i];
+    }
+    return sum;
+}
+
+
+function testRest(foo: number, ...numbers: number[]) {
+    var sum = 0;
+    for (var i = 1; i < numbers.length; ++i) {
+      sum += numbers[i]!;
+    }
+    return sum;
 }
