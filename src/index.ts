@@ -1,4 +1,4 @@
-import { Component, H } from './core';
+import { Component, Html } from './core';
 import { Router, Outlet, Link } from './routing';
 
 import { PreferencesPage, EditPreferencePage, PreferencesListPage } from './pages/prefs';
@@ -7,8 +7,10 @@ import { TodoPage } from './pages/todo';
 import { BenchmarkPage } from './pages/bench';
 
 
+const { div, button, br } = Html;
+
 function NavBar() {
-    return H('div', null,
+    return div(
         Link('/test', 'Test'),
         ' | ',
         Link('/todo', 'Todo'),
@@ -17,22 +19,18 @@ function NavBar() {
         ' | ',
         Link('/bench', 'Benchmark'),
         ' | ',
-        H('button', {
-            onclick() {
-                console.log(dumpComponentTree(this.getRoot()));
-            }
-        }, 'Print tree'),
+        button('Print tree').addEventListener('click', function onClick() {
+            console.log(dumpComponentTree(this.getRoot()));
+        }),
         ' | ',
-        H('button', {
-            onclick() {}
-        }, 'Update')
+        button('Update').addEventListener('click', function onClick() { }),
     );
 }
 
 function RootPage() {
-    return H('div', null,
+    return div(
         NavBar(),
-        H('br'),
+        br(),
         Outlet()
     );
 }

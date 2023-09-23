@@ -1,7 +1,8 @@
 import { errorDescription, asyncDelay } from '../util';
 import { Value, mapValue, newProp, Context, Component, FragmentItem,
-    H, With, If, Repeat, Suspense, ErrorBoundary, Lazy } from '../core';
+    Html, With, If, Repeat, Suspense, ErrorBoundary, Lazy } from '../core';
 
+const { span, br, button, table, tr, td, input, pre } = Html;
 
 const TestContext = new Context<string>('TestContext');
 
@@ -23,41 +24,44 @@ export function TestPage(): Component {
         return Suspense('Loading...',
             cb1, cb2, cb3, cb4,
             If(checked1,
-                H('span', null, 'a')),
+                span('a')),
             If(checked2,
                 If(checked3,
-                    H('span', null, 'b'),
-                    H('span', null, 'c'))),
+                    span('b'),
+                    span('c'))),
             If(checked4,
-                H('span', null, 'd')),
+                span('d')),
             
-            H('br'),
+            br(),
             TestContext.Consume(value => ['Context value: ', value]),
-            H('br'),
-            H('button', { onclick() { throw new Error('test error'); } }, 'Fail'), H('br'),
+            br(),
+            button('Fail').addEventListener('click', function onClick() {
+                throw new Error('test error');
+            }),
+            br(),
 
             Lazy(async () => {
                 await asyncDelay(500);
-                return ['Loaded 1', H('br')];
+                return ['Loaded 1', br()];
             }),
             Lazy(() => {
-                return ['Loaded 2', H('br')];
+                return ['Loaded 2', br()];
             }),
-            asyncDelay(500).then(() => 'Async text'), H('br'),
+            asyncDelay(500).then(() => 'Async text'), br(),
             
-            'Width: ', Slider(width, 1, 20), H('br'),
-            'Height: ', Slider(height, 1, 20), H('br'),
-            'Scale: ', Slider(scale, 1, 10), H('br'),
-            H('table', null,
+            'Width: ', Slider(width, 1, 20), br(),
+            'Height: ', Slider(height, 1, 20), br(),
+            'Scale: ', Slider(scale, 1, 10), br(),
+            table(
                 With(scale, s =>
                     Repeat(height, y =>
-                        H('tr', null,
+                        tr(
                             Repeat(width, x =>
-                                H('td', null, [((x+1)*(y+1)*s).toString(), ' | '])))))),
+                                td(((x+1)*(y+1)*s).toString(), ' | ')))))),
         ).provideContext(TestContext, 'jalla');
 
         function Slider(value: Value<number>, min: number, max: number) {
-            return H('input', {
+            return input().setAttributes({
                 type: 'range',
                 min: min.toString(),
                 max: max.toString(),
@@ -71,7 +75,7 @@ export function TestPage(): Component {
         }
 
         function CheckBox() {
-            const cb = H('input', { type: 'checkbox', onchange()  { /* empty event handler still triggers update */ } });
+            const cb = input().setAttributes({ type: 'checkbox', onchange()  { /* empty event handler still triggers update */ } });
             return [cb, () => cb.node.checked] as const;
         }
     });
@@ -79,7 +83,7 @@ export function TestPage(): Component {
 
 function ErrorFallback(error: unknown, reset: () => void): FragmentItem {
     return [
-        H('pre', null, errorDescription(error)),
-        H('button', { onclick: reset }, 'Reset')
+        pre(errorDescription(error)),
+        button('Reset').addEventListener('click', reset)
     ];
 }

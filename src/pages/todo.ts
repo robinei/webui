@@ -1,4 +1,4 @@
-import { H, StaticText, If, Match, For } from '../core';
+import { Html, StaticText, If, Match, For } from '../core';
 
 interface TodoItemModel {
     title: string;
@@ -37,15 +37,11 @@ class TodoListModel {
     };
 }
 
+const { div, input, br, button } = Html;
+
 function TodoItemView(item: TodoItemModel) {
-    return H('div', {
-            onclick() { item.done = !item.done; },
-            style: {
-                cursor: 'pointer',
-                backgroundColor: () => (item.index % 2) ? '#aaaaaa' : '#ffffff',
-            }
-        },
-        H('input', {
+    return div(
+        input().setAttributes({
             type: 'checkbox',
             checked: () => item.done,
             onchange(ev: Event) {
@@ -54,28 +50,28 @@ function TodoItemView(item: TodoItemModel) {
         }),
         () => item.title,
         If(() => item.done, ' - Done')
-    );
+    ).setAttributes({
+        onclick() { item.done = !item.done; },
+        style: {
+            cursor: 'pointer',
+            backgroundColor: () => (item.index % 2) ? '#aaaaaa' : '#ffffff',
+        }
+    });
 }
 
 function TodoListView(model: TodoListModel) {
-    const input = H('input');
-    return H('div', null,
+    const textInput = input();
+    return div(
         'Todo:',
-        H('br'),
-        input,
-        H('button', {
-            onclick() {
-                model.addItem(input.node.value);
-                input.node.value = '';
-            }
-        }, 'Add'),
-        H('br'),
-        H('button', {
-            onclick: model.setNoneDone
-        }, 'Select none'),
-        H('button', {
-            onclick: model.setAllDone
-        }, 'Select all'),
+        br(),
+        textInput,
+        button('Add').addEventListener('click', function onClick() {
+            model.addItem(textInput.node.value);
+            textInput.node.value = '';
+        }),
+        br(),
+        button('Select none').addEventListener('click', model.setNoneDone),
+        button('Select all').addEventListener('click', model.setAllDone),
         Match(() => model.getItems().length % 2,
             [0, 'even'],
             [1, StaticText('odd')

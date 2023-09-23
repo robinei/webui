@@ -1,4 +1,4 @@
-import { Component, Context, FragmentItem, H } from "./core";
+import { Component, Context, FragmentItem, Html } from "./core";
 import { arraysEqual, deepEqual } from "./util";
 
 
@@ -347,12 +347,14 @@ export function replacePath(path: string): void {
     }
 }
 
+const { a } = Html;
+
 export function Link(path: string, fragment: FragmentItem) {
-    return H('a', {
+    return a(fragment).setAttributes({
         href: path,
         onclick(ev: MouseEvent) {
             ev.preventDefault();
             pushPath(path);
         }
-    }, fragment);
+    });
 }

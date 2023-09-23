@@ -989,28 +989,31 @@ export function flattenFragment(fragment: FragmentItem): Component[] {
 }
 
 
-export function H<K extends keyof HTMLElementTagNameMap>(
-    tag: K,
-    attributes: Attributes<HTMLElementTagNameMap[K]> | null = null,
-    ...children: FragmentItem[]
-): Component<HTMLElementTagNameMap[K]> {
-    const component = new Component(document.createElement(tag))
-    if (attributes) {
-        component.setAttributes(attributes);
-    }
-    if (children.length > 0) {
-        const lastText = iterateFragment(children, component.appendChild.bind(component), true);
-        if (lastText) {
-            if (component.hasChildren()) {
-                component.appendChild(StaticText(lastText));
-            } else {
-                // only set textContent if there were no other children
-                component.node.textContent = lastText;
+
+type HtmlFuncs = {
+    [Tag in keyof HTMLElementTagNameMap]: (...children: FragmentItem[]) => Component<HTMLElementTagNameMap[Tag]>;
+};
+export const Html = new Proxy({}, {
+    get(target, name) {
+        const tag = name.toString();
+        return function createHtmlComponent(...children: FragmentItem[]) {
+            const component = new Component(document.createElement(tag));
+            if (children.length > 0) {
+                const lastText = iterateFragment(children, component.appendChild.bind(component), true);
+                if (lastText) {
+                    if (component.hasChildren()) {
+                        component.appendChild(StaticText(lastText));
+                    } else {
+                        // only set textContent if there were no other children
+                        component.node.textContent = lastText;
+                    }
+                }
             }
+            return component;
         }
     }
-    return component;
-}
+}) as HtmlFuncs;
+
 
 
 export function StaticText(value: string): Component<Text> {

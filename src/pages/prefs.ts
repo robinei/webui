@@ -1,4 +1,4 @@
-import { H, For } from '../core';
+import { Html, For } from '../core';
 import { Outlet, Link } from '../routing';
 
 
@@ -34,19 +34,21 @@ function setPreference(name: string, value: string) {
     }
 }
 
+const { div, hr, br, ul, li, input } = Html;
+
 export function PreferencesPage() {
-    return H('div', null,
+    return div(
         'Preferences:',
-        H('hr'),
+        hr(),
         Outlet(),
-        H('hr'),
+        hr(),
     );
 }
 
 export function PreferencesListPage() {
-    return H('ul', null,
+    return ul(
         For(() => preferences, pref =>
-            H('li', null,
+            li(
                 pref.name,
                 ': ',
                 () => pref.value,
@@ -58,17 +60,17 @@ export function PreferencesListPage() {
 }
 
 export function EditPreferencePage({name}: { name(): string }) {
-    const input = H('input', {
+    const textInput = input().setAttributes({
         value: () => getPreference(name()),
         oninput() {
-            setPreference(name(), input.node.value);
+            setPreference(name(), textInput.node.value);
         }
     });
-    return H('div', null,
+    return div(
         'Editing ',
         name,
-        H('br'),
-        input,
+        br(),
+        textInput,
         Link('/prefs', 'done'),
     );
 }

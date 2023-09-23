@@ -1,5 +1,5 @@
 
-import { H, Lazy } from '../core';
+import { Html, Lazy } from '../core';
 import { asyncDelay, Semaphore } from '../util';
 
 function benchmark(iters: number, func: () => void): number {
@@ -26,22 +26,24 @@ function Benchmark(desc: string, iters: number, func: () => void) {
     }).appendFragment('...')];
 }
 
+const { div, hr, br } = Html;
+
 export function BenchmarkPage() {
     const domIters = 100000;
     const argIters = 10000000;
 
-    return H('div', null,
+    return div(
         'Benchmark results:',
-        H('hr'),
+        hr(),
         Benchmark('Component', domIters, () => {
-            H('div', null,
+            div(
                 'foo',
-                H('br'),
-                H('div', null, 'bar'),
+                br(),
+                div('bar'),
                 'baz'
             );
         }),
-        H('br'),
+        br(),
         Benchmark("Vanilla", domIters, () => {
             const topDiv = document.createElement('div');
             topDiv.appendChild(document.createTextNode('foo'));
@@ -51,11 +53,11 @@ export function BenchmarkPage() {
             topDiv.appendChild(innerDiv);
             topDiv.appendChild(document.createTextNode('baz'));
         }),
-        H('hr'),
+        hr(),
         Benchmark("Rest", argIters, () => {
             testRest(1,2,3,4,5,6,7,8,9);
         }),
-        H('br'),
+        br(),
         Benchmark("Arguments", argIters, () => {
             testArguments(1,2,3,4,5,6,7,8,9);
         }),
