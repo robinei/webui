@@ -44,21 +44,15 @@ function DefaultPage() {
 
 
 const router = new Router(RootPage);
+router.route('/test', TestPage);
+router.route('/todo', TodoPage);
+router.route('/', DefaultPage);
 {
-    router.route('/test', TestPage);
-    
-    router.route('/todo', TodoPage);
-
-    router.route('/', DefaultPage);
-
-    {
-        const prefs = router.route('/prefs', PreferencesPage);
-        prefs.route('/name:string', EditPreferencePage);
-        prefs.route('', PreferencesListPage);
-    }
-    
-    router.route('/bench', BenchmarkPage);
+    const prefs = router.route('/prefs', PreferencesPage);
+    prefs.route('/name:string', EditPreferencePage);
+    prefs.route('', PreferencesListPage);
 }
+router.route('/bench', BenchmarkPage);
 router.init();
 
 new Component(document.body)

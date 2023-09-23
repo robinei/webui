@@ -1,5 +1,5 @@
-import { Component, Context, FragmentItem, flattenFragment, H } from "./core";
-import { deepEqual } from "./util";
+import { Component, Context, FragmentItem, H } from "./core";
+import { arraysEqual, deepEqual } from "./util";
 
 
 type ParsePathSpec<P extends string> =
@@ -9,7 +9,7 @@ type ParsePathSpec<P extends string> =
 
 type ParsePathSpecSuffix<S extends string> =
     S extends `${infer Prefix extends string}?${infer Query extends string}`
-        ? ParsePathSpecTypedKey<Prefix> & ParsePathSpecQuery<Query>
+        ? ParsePathSpecTypedKey<Prefix> & Partial<ParsePathSpecQuery<Query>>
         : ParsePathSpecTypedKey<S>;
 
 type ParsePathSpecQuery<Q extends string> =
@@ -33,7 +33,7 @@ type JoinPath<A extends string, B extends string> =
         : (B extends `/${infer BS extends string}` ? `${A}/${BS}` : `${A}/${B}`);
 
 type FunctionsOf<T> = {
-    [K in keyof T]: () => T[K];
+    [K in keyof T]-?: () => T[K];
 };
 
 
@@ -60,9 +60,48 @@ function parsePathSpec(pathSpec: string): PathMatcher {
         };
     }
 
+    if (pathSpec.startsWith('?')) {
+        const queryParsers: { [key: string]: (s: string) => unknown } = {};
+        for (const specPart of pathSpec.substring(1).split('&')) {
+            const [key, type] = specPart.split(':');
+            if (!key || !type) {
+                throw new Error('bad query spec');
+            }
+            queryParsers[key] = createValueParser(type, true);
+        }
+        return (path, args) => {
+            if (path.startsWith('?')) {
+                const query: { [key: string]: string } = {};
+                for (const queryPart of path.substring(1).split('&')) {
+                    const [key, value] = queryPart.split('=');
+                    if (key && value) {
+                        query[key] = value;
+                    } else if (key) {
+                        query[key] = '';
+                    }
+                }
+                for (const key in queryParsers) {
+                    const value = query[key];
+                    if (value !== undefined) {
+                        const parsedValue = queryParsers[key]!(value);
+                        if (parsedValue != null) {
+                            args[key] = parsedValue;
+                        }
+                    }
+                }
+            } else if (path) {
+                return false;
+            }
+            return '';
+        };
+    }
+
     let partEnd = pathSpec.indexOf('/');
     if (partEnd < 0) {
-        partEnd = pathSpec.length;
+        partEnd = pathSpec.indexOf('?');
+        if (partEnd < 0) {
+            partEnd = pathSpec.length;
+        }
     }
     const fragment = pathSpec.substring(0, partEnd);
     const parseRest = parsePathSpec(pathSpec.substring(partEnd));
@@ -102,14 +141,19 @@ function parsePathSpec(pathSpec: string): PathMatcher {
     };
 }
 
-function createValueParser(type: string): (s: string) => unknown {
+function createValueParser(type: string, allowEmpty: boolean = false): (s: string) => unknown {
     switch (type) {
-        case 'string': return s => s;
-        case 'number': return s => {
+        case 'string': return function valueParser(s) {
+            return !allowEmpty && !s ? null : s;
+        };
+        case 'number': return function valueParser(s) {
+            if (!allowEmpty && !s) {
+                return null;
+            }
             const num = Number(s);
             return isNaN(num) ? null : num;
         };
-        case 'boolean': return s => {
+        case 'boolean': return function valueParser(s) {
             switch (s.toLowerCase()) {
                 case '0':
                 case 'no':
@@ -117,6 +161,7 @@ function createValueParser(type: string): (s: string) => unknown {
                 case '1':
                 case 'yes':
                 case 'true': return true;
+                case '': return allowEmpty ? true : null;
                 default: return null;
             }
         };
@@ -134,6 +179,12 @@ function runParsePathSpecTests() {
     runTest('/foo:number', '/nan', false, {});
     runTest('/foo:number/bar:string', '/123/str', '', {foo: 123, bar: 'str'});
     runTest('/prefix/foo:number/bar:string', '/prefix/123/str', '', {foo: 123, bar: 'str'});
+    runTest('/foo?b:boolean&n:number&s:string', '/foo?b=true&n=123&s=bar', '', {b:true, n:123, s:'bar'});
+    runTest('/foo?b:boolean&n:number&s:string', '/foo?b=true', '', {b:true});
+    runTest('/foo?b:boolean&n:number&s:string', '/foo?b&n&s', '', {b:true, n:0, s:''});
+    runTest('/foo/b:boolean', '/foo/', false, {});
+    runTest('/foo/n:number', '/foo/', false, {});
+    runTest('/foo/s:string', '/foo/', false, {});
 
     function runTest(spec: string, path: string, expectedResult: string | false, expectedArgs: { [key: string]: unknown }): void {
         const matcher = parsePathSpec(spec);
@@ -164,16 +215,17 @@ export function Outlet() {
 export class Route<Args> {
     private readonly subRoutes: Route<any>[] = [];
     private readonly matcher: PathMatcher;
-    public readonly component: Component<null>;
     private fragmentCreated = false;
 
-    private args: { [key: string]: unknown } = {};
+    private args?: { [key: string]: unknown };
 
     private matchedSubRoute?: Route<any>;
     private outletSubRoute?: Route<any>; // the sub-route whose component we have currently mounted in our fragment's Outlet
     private outlet?: Component;
 
-    constructor(readonly pathSpec: string, private readonly makeFragment: (args: FunctionsOf<Args>) => FragmentItem) {
+    readonly component: Component<null>;
+
+    protected constructor(readonly pathSpec: string, private readonly makeFragment: (args: any) => FragmentItem) {
         this.matcher = parsePathSpec(pathSpec);
         const name = pathSpec ? `Route[${pathSpec}]` : 'Router';
         this.component = new Component(null, name).provideContext(RouteContext, this);
@@ -185,7 +237,7 @@ export class Route<Args> {
     ): Route<Args & ParsePathSpec<PathSpec>> {
         const route = new Route(pathSpec, makeContent);
         this.subRoutes.push(route);
-        return route;
+        return route as any;
     }
 
     tryMatch(path: string, parentArgs?: { [key: string]: unknown }): boolean {
@@ -224,11 +276,14 @@ export class Route<Args> {
 
     private update(): void {
         if (!this.fragmentCreated) {
+            if (!this.args) {
+                throw new Error('args not yet parsed');
+            }
             const argFuncs: any = {};
             for (const key in this.args) {
-                argFuncs[key] = () => this.args[key];
+                argFuncs[key] = () => this.args![key];
             }
-            this.component.appendChildren(flattenFragment(this.makeFragment(argFuncs)));
+            this.component.appendFragment(this.makeFragment(argFuncs));
             this.fragmentCreated = true;
         }
 

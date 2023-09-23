@@ -57,7 +57,7 @@ export function PreferencesListPage() {
     );
 }
 
-export function EditPreferencePage({name}: {name: () => string}) {
+export function EditPreferencePage({name}: { name(): string }) {
     const input = H('input', {
         value: () => getPreference(name()),
         oninput() {
