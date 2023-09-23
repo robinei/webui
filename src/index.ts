@@ -19,11 +19,15 @@ function NavBar() {
         ' | ',
         Link('/bench', 'Benchmark'),
         ' | ',
-        button('Print tree').addEventListener('click', function onClick() {
-            console.log(dumpComponentTree(this.getRoot()));
+        button('Print tree', {
+            onclick() {
+                console.log(dumpComponentTree(this.getRoot()));
+            }
         }),
         ' | ',
-        button('Update').addEventListener('click', function onClick() { }),
+        button('Update', {
+            onclick() { }
+        }),
     );
 }
 

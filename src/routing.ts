@@ -350,7 +350,7 @@ export function replacePath(path: string): void {
 const { a } = Html;
 
 export function Link(path: string, fragment: FragmentItem) {
-    return a(fragment).setAttributes({
+    return a(fragment, {
         href: path,
         onclick(ev: MouseEvent) {
             ev.preventDefault();

@@ -60,7 +60,7 @@ export function PreferencesListPage() {
 }
 
 export function EditPreferencePage({name}: { name(): string }) {
-    const textInput = input().setAttributes({
+    const textInput = input({
         value: () => getPreference(name()),
         oninput() {
             setPreference(name(), textInput.node.value);

@@ -1,4 +1,4 @@
-import { calcLevenshteinOperations, WritableKeys, errorDescription } from './util';
+import { calcLevenshteinOperations, WritableKeys, errorDescription, isPlainObject } from './util';
 
 // used as a private 'missing' placeholder that outside code can't create
 const Nil: unique symbol = Symbol('Nil');
@@ -933,54 +933,40 @@ function setElementAttribute(elem: Element, name: string, value: Primitive): voi
 }
 
 
-
-export function iterateFragment(fragment: FragmentItem, handler: (component: Component) => void, returnLastText = false): string | undefined {
-    let text: string | undefined;
-    next(fragment);
-    if (text && !returnLastText) {
-        handler(StaticText(text));
-        return undefined;
-    }
-    return text;
-
-    function next(item: FragmentItem): void {
-        if (item === null || item === undefined) {
-            // ignore
-        } else if (item instanceof Component) {
+        
+function visitFragment(fragment: FragmentItem, text: string, handler: (component: Component) => void): string {
+    if (fragment === null || fragment === undefined) {
+        // ignore
+    } else if (fragment instanceof Component) {
+        if (text) {
+            handler(StaticText(text));
+            text = '';
+        }
+        handler(fragment);
+    } else if (Array.isArray(fragment)) {
+        for (const item of fragment) {
+            text = visitFragment(item, text, handler);
+        }
+    } else {
+        if (isStaticValue(fragment)) {
+            text += fragment.toString();
+        } else {
             if (text) {
                 handler(StaticText(text));
-                text = undefined;
+                text = '';
             }
-            handler(item);
-        } else if (Array.isArray(item)) {
-            for (const it of item) {
-                next(it);
-            }
-        } else {
-            if (isStaticValue(item)) {
-                let str = '';
-                switch (typeof item) {
-                case 'string': str = item; break;
-                case 'number': str = item.toString(); break;
-                case 'boolean': str = item ? 'true' : 'false'; break;
-                }
-                if (text) {
-                    text += str;
-                } else {
-                    text = str;
-                }
-            } else {
-                if (text) {
-                    handler(StaticText(text));
-                    text = undefined;
-                }
-                handler(DynamicText(item));
-            }
+            handler(DynamicText(fragment));
         }
     }
+    return text;
 }
 
-
+export function iterateFragment(rootFragment: FragmentItem, handler: (component: Component) => void): void {
+    const text = visitFragment(rootFragment, '', handler);
+    if (text) {
+        handler(StaticText(text));
+    }
+}
 
 export function flattenFragment(fragment: FragmentItem): Component[] {
     const components: Component[] = [];
@@ -990,29 +976,42 @@ export function flattenFragment(fragment: FragmentItem): Component[] {
 
 
 
-type HtmlFuncs = {
-    [Tag in keyof HTMLElementTagNameMap]: (...children: FragmentItem[]) => Component<HTMLElementTagNameMap[Tag]>;
-};
 export const Html = new Proxy({}, {
     get(target, name) {
         const tag = name.toString();
-        return function createHtmlComponent(...children: FragmentItem[]) {
+
+        return function createHtmlComponent() {
             const component = new Component(document.createElement(tag));
-            if (children.length > 0) {
-                const lastText = iterateFragment(children, component.appendChild.bind(component), true);
-                if (lastText) {
+
+            if (arguments.length > 0) {
+                let text = '';
+
+                const handler = component.appendChild.bind(component);
+                for (let i = 0; i < arguments.length; ++i) {
+                    const arg = arguments[i];
+                    if (isPlainObject(arg)) {
+                        component.setAttributes(arg);
+                    } else {
+                        text = visitFragment(arg, text, handler);
+                    }
+                }
+
+                if (text) {
                     if (component.hasChildren()) {
-                        component.appendChild(StaticText(lastText));
+                        component.appendChild(StaticText(text));
                     } else {
                         // only set textContent if there were no other children
-                        component.node.textContent = lastText;
+                        component.node.textContent = text;
                     }
                 }
             }
+
             return component;
         }
     }
-}) as HtmlFuncs;
+}) as {
+    [Tag in keyof HTMLElementTagNameMap]: (...children: (FragmentItem | Attributes<HTMLElementTagNameMap[Tag]>)[]) => Component<HTMLElementTagNameMap[Tag]>;
+};
 
 
 

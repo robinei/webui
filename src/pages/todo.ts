@@ -1,9 +1,8 @@
-import { Html, StaticText, If, Match, For } from '../core';
+import { Html, If, Match, For } from '../core';
 
 interface TodoItemModel {
     title: string;
     done: boolean;
-    index: number;
 }
 
 class TodoListModel {
@@ -13,7 +12,6 @@ class TodoListModel {
         this.items.push({
             title,
             done: false,
-            index: this.items.length,
         });
         return this;
     }
@@ -41,22 +39,23 @@ const { div, input, br, button } = Html;
 
 function TodoItemView(item: TodoItemModel) {
     return div(
-        input().setAttributes({
+        {
+            className: 'todoItem',
+            onclick() { item.done = !item.done; },
+            style: {
+                cursor: 'pointer'
+            }
+        },
+        input({
             type: 'checkbox',
             checked: () => item.done,
-            onchange(ev: Event) {
+            onchange(ev) {
                 item.done = (ev.target as any).checked;
             }
         }),
         () => item.title,
         If(() => item.done, ' - Done')
-    ).setAttributes({
-        onclick() { item.done = !item.done; },
-        style: {
-            cursor: 'pointer',
-            backgroundColor: () => (item.index % 2) ? '#aaaaaa' : '#ffffff',
-        }
-    });
+    );
 }
 
 function TodoListView(model: TodoListModel) {
@@ -65,23 +64,23 @@ function TodoListView(model: TodoListModel) {
         'Todo:',
         br(),
         textInput,
-        button('Add').addEventListener('click', function onClick() {
-            model.addItem(textInput.node.value);
-            textInput.node.value = '';
+        button('Add', {
+            onclick() {
+                model.addItem(textInput.node.value);
+                textInput.node.value = '';
+            }
         }),
         br(),
-        button('Select none').addEventListener('click', model.setNoneDone),
-        button('Select all').addEventListener('click', model.setAllDone),
+        button('Select none', { onclick: model.setNoneDone }),
+        button('Select all', { onclick: model.setAllDone }),
         Match(() => model.getItems().length % 2,
             [0, 'even'],
-            [1, StaticText('odd')
-                    .addMountListener(() => console.log('odd mounted'))
-                    .addUnmountListener(() => console.log('odd unmounted'))]),
+            [1, 'odd']),
         For(model.getItems, TodoItemView),
     );
 }
 
 export function TodoPage() {
-    const model = new TodoListModel().addItem('Bake bread');
+    const model = new TodoListModel().addItem('Bake bread').addItem('Clean dishes').addItem('Take out trash').addItem('Buy groceries');
     return TodoListView(model);
 }

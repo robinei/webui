@@ -35,8 +35,10 @@ export function TestPage(): Component {
             br(),
             TestContext.Consume(value => ['Context value: ', value]),
             br(),
-            button('Fail').addEventListener('click', function onClick() {
-                throw new Error('test error');
+            button('Fail', {
+                onclick() {
+                    throw new Error('test error');
+                }
             }),
             br(),
 
@@ -61,7 +63,7 @@ export function TestPage(): Component {
         ).provideContext(TestContext, 'jalla');
 
         function Slider(value: Value<number>, min: number, max: number) {
-            return input().setAttributes({
+            return input({
                 type: 'range',
                 min: min.toString(),
                 max: max.toString(),
@@ -75,7 +77,7 @@ export function TestPage(): Component {
         }
 
         function CheckBox() {
-            const cb = input().setAttributes({ type: 'checkbox', onchange()  { /* empty event handler still triggers update */ } });
+            const cb = input({ type: 'checkbox', onchange()  { /* empty event handler still triggers update */ } });
             return [cb, () => cb.node.checked] as const;
         }
     });
@@ -84,6 +86,6 @@ export function TestPage(): Component {
 function ErrorFallback(error: unknown, reset: () => void): FragmentItem {
     return [
         pre(errorDescription(error)),
-        button('Reset').addEventListener('click', reset)
+        button('Reset', { onclick: reset })
     ];
 }
