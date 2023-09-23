@@ -7,36 +7,26 @@ import { TodoPage } from './pages/todo';
 import { BenchmarkPage } from './pages/bench';
 
 
-const { div, button, br } = Html;
-
-function NavBar() {
-    return div(
-        Link('/test', 'Test'),
-        ' | ',
-        Link('/todo', 'Todo'),
-        ' | ',
-        Link('/prefs', 'Prefs'),
-        ' | ',
-        Link('/bench', 'Benchmark'),
-        ' | ',
-        button('Print tree', {
-            onclick() {
-                console.log(dumpComponentTree(this.getRoot()));
-            }
-        }),
-        ' | ',
-        button('Update', {
-            onclick() { }
-        }),
-    );
-}
+const { nav, main, button } = Html;
 
 function RootPage() {
-    return div(
-        NavBar(),
-        br(),
-        Outlet()
-    );
+    return [
+        nav(
+            Link('/test', 'Test'),
+            Link('/todo', 'Todo'),
+            Link('/prefs', 'Prefs'),
+            Link('/bench', 'Benchmark'),
+            button('Print tree', {
+                onclick() {
+                    console.log(dumpComponentTree(this.getRoot()));
+                }
+            }),
+            button('Update', {
+                onclick() { }
+            }),
+        ),
+        main(Outlet())
+    ];
 }
 
 function DefaultPage() {
@@ -57,9 +47,7 @@ router.route('/', DefaultPage);
 router.route('/bench', BenchmarkPage);
 router.init();
 
-new Component(document.body)
-    .appendChild(router.component)
-    .mount();
+new Component(document.body).appendChild(router.component).mount();
 
 
 

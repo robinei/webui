@@ -59,7 +59,7 @@ export function TestPage(): Component {
                     Repeat(height, y =>
                         tr(
                             Repeat(width, x =>
-                                td(((x+1)*(y+1)*s).toString(), ' | ')))))),
+                                td(((x+1)*(y+1)*s).toString())))))),
         ).provideContext(TestContext, 'jalla');
 
         function Slider(value: Value<number>, min: number, max: number) {

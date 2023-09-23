@@ -406,16 +406,7 @@ export class Component<N extends Node | null = Node | null> {
                     break;
                 }
             } else if (name === 'style') {
-                if (!(this.node instanceof HTMLElement)) {
-                    throw new Error('style attribute requires node to be HTMLElement');
-                }
-                const elem = this.node;
-                const styles = value as Styles;
-                for (const styleName in styles) {
-                    this.addValueWatcher(styles[styleName]!, function onStyleChanged(primitive) {
-                        elem.style[styleName] = primitive;
-                    });
-                }
+                this.setStyle(value as Styles);
             } else {
                 if (!(this.node instanceof Element)) {
                     throw new Error('attribute requires node to be Element');
@@ -423,6 +414,19 @@ export class Component<N extends Node | null = Node | null> {
                 const elem = this.node;
                 this.addValueWatcher(value, setElementAttribute.bind(null, elem, name));
             }
+        }
+        return this;
+    }
+
+    setStyle(style: Styles): Component<N> {
+        if (!(this.node instanceof HTMLElement)) {
+            throw new Error('style attribute requires node to be HTMLElement');
+        }
+        const elem = this.node;
+        for (const styleName in style) {
+            this.addValueWatcher(style[styleName]!, function onStyleChanged(primitive) {
+                elem.style[styleName] = primitive;
+            });
         }
         return this;
     }
