@@ -13,20 +13,20 @@ function benchmark(iters: number, func: () => void): number {
 
 const lock = new Semaphore();
 
+const { div, hr, br, b } = Html;
+
 function Benchmark(desc: string, iters: number, func: () => void) {
     return [`${desc}: `, Lazy(async () => {
         await lock.acquire(); // ensure that they will start one after another (with 10 ms delay between each)
         try {
             await asyncDelay(10);
             const t = benchmark(iters, func);
-            return ` ${t} ms`;
+            return [b(t), ' ms'];
         } finally {
             lock.release();
         }
     }).appendFragment('...')];
 }
-
-const { div, hr, br } = Html;
 
 export function BenchmarkPage() {
     const domIters = 100000;

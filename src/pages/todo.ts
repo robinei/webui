@@ -113,7 +113,15 @@ function TodoItemView(item: TodoItemModel, list: TodoListModel) {
                     oninput(ev) {
                         console.log((ev.target as any).value);
                         item.title = (ev.target as any).value;
-                    }
+                    },
+                    onkeydown(ev) {
+                        if (ev.key === 'Enter') {
+                            editing = false;
+                        }
+                    },
+                    onmounted() {
+                        setTimeout(() => this.node.focus(), 100);
+                    },
                 }),
                 button('Done', {
                     onclick() {
@@ -137,8 +145,18 @@ function TodoListView(list: TodoListModel) {
         },
         oninput() {
             // do nothing - but presence of handler will trigger updates whenever the text changes (used to control Add button disablement)
-        }
+        },
+        onkeydown(ev) {
+            if (ev.key === 'Enter') {
+                onAddText();
+            }
+        },
     });
+
+    function onAddText() {
+        list.addItem(textInput.node.value);
+        textInput.node.value = '';
+    }
 
     return div(
         div(
@@ -150,10 +168,7 @@ function TodoListView(list: TodoListModel) {
             textInput,
             button('Add', {
                 disabled: () => !textInput.node.value,
-                onclick() {
-                    list.addItem(textInput.node.value);
-                    textInput.node.value = '';
-                },
+                onclick: onAddText,
                 style: {
                     marginLeft: '10px'
                 } 
