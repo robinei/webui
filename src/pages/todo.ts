@@ -1,4 +1,4 @@
-import { Html, If, Match, For, Lazy } from '../core';
+import { HTML, If, Match, For, Lazy } from '../core';
 
 interface TodoItemModel {
     title: string;
@@ -72,7 +72,7 @@ class TodoListModel {
 
 
 
-const { div, input, button, span, em, h4 } = Html;
+const { div, input, button, span, em, h4 } = HTML;
 
 function TodoItemView(item: TodoItemModel, list: TodoListModel) {
     let editing = false;

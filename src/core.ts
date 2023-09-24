@@ -1002,7 +1002,7 @@ export function flattenFragment(fragment: FragmentItem): Component[] {
 
 
 
-export const Html = new Proxy({}, {
+export const HTML = new Proxy({}, {
     get(target, name) {
         const tag = name.toString();
 
@@ -1039,7 +1039,9 @@ export const Html = new Proxy({}, {
     [Tag in keyof HTMLElementTagNameMap]: HTMLComponentConstructor<Tag>;
 };
 
-type HTMLComponentConstructor<Tag extends keyof HTMLElementTagNameMap> = (...children: (FragmentItem | Attributes<HTMLElementTagNameMap[Tag]>)[]) => Component<HTMLElementTagNameMap[Tag]>;
+export type HTMLChildFragment<T extends HTMLElement> = FragmentItem | Attributes<T>;
+
+type HTMLComponentConstructor<Tag extends keyof HTMLElementTagNameMap> = (...children: HTMLChildFragment<HTMLElementTagNameMap[Tag]>[]) => Component<HTMLElementTagNameMap[Tag]>;
 
 
 export function StaticText(value: string): Component<Text> {

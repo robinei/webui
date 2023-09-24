@@ -1,4 +1,4 @@
-import { Html, For } from '../core';
+import { HTML, For } from '../core';
 import { Outlet, Link } from '../routing';
 
 
@@ -34,7 +34,7 @@ function setPreference(name: string, value: string) {
     }
 }
 
-const { div, hr, br, ul, li, input } = Html;
+const { div, hr, br, ul, li, input } = HTML;
 
 export function PreferencesPage() {
     return div(

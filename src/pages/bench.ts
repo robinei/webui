@@ -1,5 +1,5 @@
 
-import { Html, Lazy } from '../core';
+import { HTML, Lazy } from '../core';
 import { asyncDelay, Semaphore } from '../util';
 
 function benchmark(iters: number, func: () => void): number {
@@ -13,7 +13,7 @@ function benchmark(iters: number, func: () => void): number {
 
 const lock = new Semaphore();
 
-const { div, hr, br, b } = Html;
+const { div, hr, br, b } = HTML;
 
 function Benchmark(desc: string, iters: number, func: () => void) {
     return [`${desc}: `, Lazy(async () => {

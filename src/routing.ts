@@ -1,4 +1,4 @@
-import { Component, Context, FragmentItem, Html } from "./core";
+import { Component, Context, FragmentItem, HTML, HTMLChildFragment } from "./core";
 import { arraysEqual, deepEqual } from "./util";
 
 
@@ -347,9 +347,9 @@ export function replacePath(path: string): void {
     }
 }
 
-const { a } = Html;
+const { a } = HTML;
 
-export function Link(path: string, fragment: FragmentItem) {
+export function Link(path: string, fragment: HTMLChildFragment<HTMLAnchorElement>) {
     return a(fragment, {
         href: path,
         onclick(ev: MouseEvent) {

@@ -1,4 +1,4 @@
-import { Component, Html } from './core';
+import { Component, HTML } from './core';
 import { Router, Outlet, Link } from './routing';
 
 import { PreferencesPage, EditPreferencePage, PreferencesListPage } from './pages/prefs';
@@ -7,7 +7,7 @@ import { TodoPage } from './pages/todo';
 import { BenchmarkPage } from './pages/bench';
 
 
-const { nav, main, button } = Html;
+const { nav, main, button } = HTML;
 
 function RootPage() {
     return [
