@@ -133,6 +133,9 @@ export class Context<T> {
 }
 
 
+
+let forceValuePropagation = false;
+
 export class Component<N extends Node | null = Node | null> {
     private parent?: Component;
     private firstChild?: Component;
@@ -155,9 +158,13 @@ export class Component<N extends Node | null = Node | null> {
 
     private contextValues?: Map<Context<unknown>, unknown>;
 
-    constructor(readonly node: N, private readonly name?: string) {}
+    constructor(readonly node: N, private name?: string) {}
 
     getName(): string { return this.name ?? this.node?.nodeName ?? 'Component'; }
+    setName(name: string): Component<N> {
+        this.name = name;
+        return this;
+    }
 
     getParent(): Component | undefined { return this.parent; }
     getFirstChild(): Component | undefined { return this.firstChild; }
@@ -309,10 +316,18 @@ export class Component<N extends Node | null = Node | null> {
     }
 
     addUpdateListener(listener: (this: Component<N>) => void | false): Component<N> {
+        const boundListener = listener.bind(this);
         if (this.updateListeners) {
-            this.updateListeners.push(listener.bind(this));
+            this.updateListeners.push(boundListener);
         } else {
-            this.updateListeners = [listener.bind(this)];
+            this.updateListeners = [boundListener];
+        }
+        if (this.mounted) {
+            try {
+                boundListener();
+            } catch (e) {
+                this.injectError(e);
+            }
         }
         return this;
     }
@@ -339,7 +354,7 @@ export class Component<N extends Node | null = Node | null> {
         let lastVal: ValueFuncResult<T> | Nil = Nil;
         self.addUpdateListener(function checkIfValueChanged(): void {
             const newVal = valueFunc();
-            if (equalCheck && newVal === lastVal) {
+            if (!forceValuePropagation && equalCheck && newVal === lastVal) {
                 return; // early check and return (do less in common case of no change)
             }
             if (!(newVal instanceof Promise)) {
@@ -371,7 +386,7 @@ export class Component<N extends Node | null = Node | null> {
 
         function onValueChanged(v: T): void {
             try {
-                if (!equalCheck || lastEmittedValue !== v) {
+                if (forceValuePropagation || !equalCheck || lastEmittedValue !== v) {
                     lastEmittedValue = v;
                     boundWatcher(v);
                 }
@@ -419,10 +434,10 @@ export class Component<N extends Node | null = Node | null> {
     }
 
     setStyle(style: Styles): Component<N> {
-        if (!(this.node instanceof HTMLElement)) {
+        const elem = this.node;
+        if (!(elem instanceof HTMLElement)) {
             throw new Error('style attribute requires node to be HTMLElement');
         }
-        const elem = this.node;
         for (const styleName in style) {
             this.addValueWatcher(style[styleName]!, function onStyleChanged(primitive) {
                 elem.style[styleName] = primitive;
@@ -674,7 +689,14 @@ export class Component<N extends Node | null = Node | null> {
             }
         }
         
-        this.update(); // immediately update a mounted tree
+        const prevForceValuePropagation = forceValuePropagation;
+        forceValuePropagation = true;
+        try {
+            this.update(); // immediately update a mounted tree
+        } finally {
+            forceValuePropagation = prevForceValuePropagation;
+        }
+        
         return pendingMountedCalls;
     }
 
@@ -1014,9 +1036,10 @@ export const Html = new Proxy({}, {
         }
     }
 }) as {
-    [Tag in keyof HTMLElementTagNameMap]: (...children: (FragmentItem | Attributes<HTMLElementTagNameMap[Tag]>)[]) => Component<HTMLElementTagNameMap[Tag]>;
+    [Tag in keyof HTMLElementTagNameMap]: HTMLComponentConstructor<Tag>;
 };
 
+type HTMLComponentConstructor<Tag extends keyof HTMLElementTagNameMap> = (...children: (FragmentItem | Attributes<HTMLElementTagNameMap[Tag]>)[]) => Component<HTMLElementTagNameMap[Tag]>;
 
 
 export function StaticText(value: string): Component<Text> {
@@ -1070,6 +1093,7 @@ export function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => Fragment
     let fragmentMap = new Map<unknown, Component[]>();
 
     const component = new Component(null, 'For');
+
     component.addValueWatcher(itemsValue, function checkItems(items) {
         if (areChildrenEqual(items)) {
             return;
@@ -1087,6 +1111,7 @@ export function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => Fragment
         component.replaceChildren(children);
         fragmentMap = newFragmentMap;
     }, false);
+
     return component;
 
     function areChildrenEqual(items: T[]): boolean {

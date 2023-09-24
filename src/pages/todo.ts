@@ -76,6 +76,13 @@ const { div, input, button, span, em, h4 } = Html;
 
 function TodoItemView(item: TodoItemModel, list: TodoListModel) {
     let editing = false;
+    const checkbox = input({
+        type: 'checkbox',
+        checked: () => item.done,
+        onchange(ev) {
+            item.done = checkbox.node.checked;
+        },
+    });
     return div(
         {
             style: {
@@ -83,13 +90,7 @@ function TodoItemView(item: TodoItemModel, list: TodoListModel) {
                 alignItems: 'center',
             }
         },
-        input({
-            type: 'checkbox',
-            checked: () => item.done,
-            onclick() {
-                item.done = !item.done;
-            },
-        }),
+        checkbox,
         If(() => !editing,
             [
                 span({
