@@ -13,19 +13,22 @@ function benchmark(iters: number, func: () => void): number {
 
 const lock = new Semaphore();
 
-const { div, hr, br, b } = HTML;
+const { div, hr, br, b, h4, h5 } = HTML;
 
 function Benchmark(desc: string, iters: number, func: () => void) {
-    return [`${desc}: `, Lazy(async () => {
-        await lock.acquire(); // ensure that they will start one after another (with 10 ms delay between each)
-        try {
-            await asyncDelay(10);
-            const t = benchmark(iters, func);
-            return [b(t), ' ms'];
-        } finally {
-            lock.release();
-        }
-    }).appendFragment('...')];
+    return div(
+        `${desc}: `,
+        Lazy(async () => {
+            await lock.acquire(); // ensure that they will start one after another (with 10 ms delay between each)
+            try {
+                await asyncDelay(10);
+                const t = benchmark(iters, func);
+                return [b(t), ' ms'];
+            } finally {
+                lock.release();
+            }
+        }).appendFragment('...') // appended fragment will be replaced when Lazy content resolves
+    );
 }
 
 export function BenchmarkPage() {
@@ -33,8 +36,8 @@ export function BenchmarkPage() {
     const argIters = 10000000;
 
     return div(
-        'Benchmark results:',
-        hr(),
+        h4('Benchmarks'),
+        h5('DOM creation'),
         Benchmark('Component', domIters, () => {
             div(
                 'foo',
@@ -43,8 +46,7 @@ export function BenchmarkPage() {
                 'baz'
             );
         }),
-        br(),
-        Benchmark("Vanilla", domIters, () => {
+        Benchmark('Vanilla', domIters, () => {
             const topDiv = document.createElement('div');
             topDiv.appendChild(document.createTextNode('foo'));
             topDiv.appendChild(document.createElement('br'));
@@ -54,11 +56,11 @@ export function BenchmarkPage() {
             topDiv.appendChild(document.createTextNode('baz'));
         }),
         hr(),
-        Benchmark("Rest", argIters, () => {
+        h5('Variable argument passing'),
+        Benchmark('Rest', argIters, () => {
             testRest(1,2,3,4,5,6,7,8,9);
         }),
-        br(),
-        Benchmark("Arguments", argIters, () => {
+        Benchmark('Arguments', argIters, () => {
             testArguments(1,2,3,4,5,6,7,8,9);
         }),
     );
