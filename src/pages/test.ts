@@ -1,10 +1,19 @@
 import { errorDescription, asyncDelay } from '../util';
 import { Value, mapValue, newProp, Context, Component, FragmentItem,
-    HTML, With, If, Repeat, Suspense, ErrorBoundary, Lazy } from '../core';
+    HTML, With, If, Repeat, Suspense, Unsuspense, ErrorBoundary, Lazy, Async } from '../core';
 
-const { span, br, button, table, tr, td, input, pre } = HTML;
+const { span, br, button, table, tr, td, input, pre, b } = HTML;
 
 const TestContext = new Context<string>('TestContext');
+
+
+async function* AsyncTest() {
+    for (let i = 0; i < 100; ++i) {
+        await asyncDelay(1000);
+        yield i;
+    }
+}
+
 
 export function TestPage(): Component {
     return ErrorBoundary(ErrorFallback, function tryTestComponent() {
@@ -44,12 +53,22 @@ export function TestPage(): Component {
 
             Lazy(async () => {
                 await asyncDelay(500);
-                return ['Loaded 1', br()];
+                return [
+                    'Loaded 1',
+                    br(),
+                    Unsuspense(
+                        [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300].map(t => Async(asyncDelay(t).then(() => b(`${t},`)))),
+                        br(),
+                        Async(AsyncTest()),
+                    ),
+                    br(),
+                ];
             }),
             Lazy(() => {
                 return ['Loaded 2', br()];
             }),
-            asyncDelay(500).then(() => 'Async text'), br(),
+            Async(asyncDelay(500).then(() => 'Async text')),
+            br(),
             
             'Width: ', Slider(width, 1, 20), br(),
             'Height: ', Slider(height, 1, 20), br(),

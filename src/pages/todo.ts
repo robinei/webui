@@ -233,8 +233,8 @@ function TodoListView(list: TodoListModel) {
                 disabled: list.isAllDone,
                 onclick: list.setAllDone,
             }),
-            For(list.getPendingItems,
-                (item) => TodoItemView(item, list))
+            For(list.getPendingItems, item =>
+                TodoItemView(item, list))
         ),
 
         When(list.hasDoneItems, div(
@@ -248,8 +248,8 @@ function TodoListView(list: TodoListModel) {
                 disabled: list.isNothingDone,
                 onclick: list.setNoneDone,
             }),
-            For(list.getDoneItems,
-                (item) => TodoItemView(item, list))
+            For(list.getDoneItems, item =>
+                TodoItemView(item, list))
         )),
     );
 }

@@ -1,26 +1,25 @@
 import { calcLevenshteinOperations, WritableKeys, errorDescription, isPlainObject } from './util';
 
+
 // used as a private 'missing' placeholder that outside code can't create
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
+
 export const Loading: unique symbol = Symbol('Loading');
 export type Loading = typeof Loading;
 
-export type Value<T> = T | Promise<T> | ValueFunc<T>;
+export type Value<T> = T | ValueFunc<T>;
 export type ValueFunc<T> = (newValue?: T) => ValueFuncResult<T>;
-export type ValueFuncResult<T> = T | Promise<T> | Loading;
+export type ValueFuncResult<T> = T | Loading;
 
 export function isStaticValue<T>(value: Value<T>): value is T {
-    return typeof value !== 'function' && !(value instanceof Promise);
+    return typeof value !== 'function';
 }
 
 export function mapValue<T, R>(value: Value<T>, mapper: (v: T) => R): Value<R> {
     if (isStaticValue(value)) {
         return mapper(value);
-    }
-    if (value instanceof Promise) {
-        return value.then(mapper);
     }
     let lastInput: ValueFuncResult<T> | Nil = Nil;
     let lastOutput: ValueFuncResult<R>;
@@ -32,8 +31,6 @@ export function mapValue<T, R>(value: Value<T>, mapper: (v: T) => R): Value<R> {
         lastInput = v;
         if (v === Loading) {
             lastOutput = Loading;
-        } else if (v instanceof Promise) {
-            lastOutput = v.then(mapper);
         } else {
             lastOutput = mapper(v);
         }
@@ -60,15 +57,14 @@ export function isPrimitive(value: unknown): value is Primitive {
         return true;
     }
     switch (typeof value) {
+    case 'undefined':
     case 'string':
     case 'number':
     case 'boolean':
-    case 'undefined':
         return true;
     }
     return false;
 }
-
 
 
 export type FragmentItem = Value<Primitive> | Component | FragmentItem[];
@@ -341,14 +337,6 @@ export class Component<N extends Node | null = Node | null> {
             onValueChanged(value);
             return self;
         }
-        
-        if (value instanceof Promise) {
-            self.trackAsyncLoad(async function awaitPromiseLoad() {
-                const v = await value;
-                onValueChanged(v);
-            });
-            return self;
-        }
 
         const valueFunc = value;
         let lastVal: ValueFuncResult<T> | Nil = Nil;
@@ -357,31 +345,18 @@ export class Component<N extends Node | null = Node | null> {
             if (!forceValuePropagation && equalCheck && newVal === lastVal) {
                 return; // early check and return (do less in common case of no change)
             }
-            if (!(newVal instanceof Promise)) {
-                if (newVal === Loading) {
-                    if (lastVal !== Loading) {
-                        self.addSuspenseCount(1);
-                        lastVal = newVal;
-                    }
-                    return;
+            if (newVal === Loading) {
+                if (lastVal !== Loading) {
+                    self.addSuspenseCount(1);
+                    lastVal = newVal;
                 }
-                if (lastVal === Loading) {
-                    self.addSuspenseCount(-1);
-                }
-                lastVal = newVal;
-                onValueChanged(newVal);
                 return;
             }
-            if (newVal === lastVal) {
-                return; // don't listen to same Promise (even if equalCheck is false)
+            if (lastVal === Loading) {
+                self.addSuspenseCount(-1);
             }
             lastVal = newVal;
-            self.trackAsyncLoad(async function awaitPromiseLoad() {
-                const v = await newVal;
-                if (newVal === lastVal) {
-                    onValueChanged(v);
-                }
-            });
+            onValueChanged(newVal);
         });
 
         function onValueChanged(v: T): void {
@@ -597,6 +572,9 @@ export class Component<N extends Node | null = Node | null> {
     }
 
     replaceChildren(children: Component[]): Component<N> {
+        if (!this.firstChild) {
+            return this.appendChildren(children);
+        }
         const operations = calcLevenshteinOperations(this.getChildren(), children);
         for (const op of operations) {
             switch (op.type) {
@@ -958,33 +936,42 @@ function setElementAttribute(elem: Element, name: string, value: Primitive): voi
     }
 }
 
-
         
 function visitFragment(fragment: FragmentItem, text: string, handler: (component: Component) => void): string {
-    if (fragment === null || fragment === undefined) {
-        // ignore
-    } else if (fragment instanceof Component) {
+    if (fragment === null) {
+        return text;
+    }
+    switch (typeof fragment) {
+    case 'boolean':
+    case 'number':
+    case 'string':
+        text += fragment.toString();
+    case 'undefined':
+        return text;
+    case 'function':
         if (text) {
             handler(StaticText(text));
             text = '';
         }
-        handler(fragment);
-    } else if (Array.isArray(fragment)) {
-        for (const item of fragment) {
-            text = visitFragment(item, text, handler);
-        }
-    } else {
-        if (isStaticValue(fragment)) {
-            text += fragment.toString();
-        } else {
+        handler(DynamicText(fragment));
+        return text;
+    default:
+        if (fragment instanceof Component) {
             if (text) {
                 handler(StaticText(text));
                 text = '';
             }
-            handler(DynamicText(fragment));
+            handler(fragment);
+            return text;
+        } else if (Array.isArray(fragment)) {
+            for (const item of fragment) {
+                text = visitFragment(item, text, handler);
+            }
+            return text;
+        } else {
+            throw new Error(`unexpected fragment object: ${fragment}`);
         }
     }
-    return text;
 }
 
 export function iterateFragment(rootFragment: FragmentItem, handler: (component: Component) => void): void {
@@ -1213,6 +1200,13 @@ export function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: Fragme
     return component;
 }
 
+export function Unsuspense(...bodyFragment: FragmentItem[]) {
+    const component = new Component(null, 'Unsuspense');
+    component.setSuspenseHandler(function noopSuspenseHandler(count) { });
+    component.appendFragment(bodyFragment);
+    return component;
+}
+
 
 export function Lazy(body: (this: Component<null>) => FragmentItem | Promise<FragmentItem>): Component<null> {
     const component = new Component(null, 'Lazy');
@@ -1235,5 +1229,36 @@ export function Lazy(body: (this: Component<null>) => FragmentItem | Promise<Fra
             component.appendFragment(loadedBody);
         });
     });
+    return component;
+}
+
+export function Async(obj: Promise<FragmentItem> | AsyncGenerator<FragmentItem>): Component<null> {
+    const component = new Component(null, 'Async');
+    if (obj instanceof Promise) {
+        component.trackAsyncLoad(async function loadAsyncFragment() {
+            component.appendFragment(await obj);
+        });
+    } else {
+        component.trackAsyncLoad(async function loadFirstAsyncGeneratorFragment() {
+            const firstResult = await obj.next();
+            if (!firstResult.done) {
+                component.appendFragment(firstResult.value);
+                (async function loadRemainingAsyncGeneratorFragments() {
+                    try {
+                        for (;;) {
+                            const result = await obj.next();
+                            if (result.done) {
+                                break;
+                            }
+                            component.clear();
+                            component.appendFragment(result.value);
+                        }
+                    } catch (e) {
+                        component.injectError(e);
+                    }
+                })();
+            }
+        });
+    }
     return component;
 }
