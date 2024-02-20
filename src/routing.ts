@@ -1,5 +1,7 @@
 import { Component, Context, FragmentItem, HTML, HTMLChildFragment } from './core';
-import { arraysEqual, deepEqual } from './util';
+import { deepEqual } from './util';
+
+const { a } = HTML;
 
 
 type ParsePathSpec<P extends string> =
@@ -39,7 +41,6 @@ type FunctionsOf<T> = {
 
 type Test = FunctionsOf<ParsePathSpec<'/hello/foo:string/test/bar:number/asdf?arg:boolean&arg2:number'>>;
 const test: Test = {} as any;
-
 
 
 
@@ -215,7 +216,7 @@ export function Outlet() {
 export class Route<Args> {
     private readonly subRoutes: Route<any>[] = [];
     private readonly matcher: PathMatcher;
-    private fragmentCreated = false;
+    private contentAppended = false;
 
     private args?: { [key: string]: unknown };
 
@@ -225,17 +226,69 @@ export class Route<Args> {
 
     readonly component: Component<null>;
 
-    protected constructor(readonly pathSpec: string, private readonly makeFragment: (args: any) => FragmentItem) {
+    protected constructor(
+        private readonly parent: Route<unknown> | null,
+        readonly pathSpec: string,
+        private readonly makeContent: (args: any) => FragmentItem | Promise<FragmentItem>
+    ) {
         this.matcher = parsePathSpec(pathSpec);
         const name = pathSpec ? `Route[${pathSpec}]` : 'Router';
         this.component = new Component(null, name).provideContext(RouteContext, this);
     }
 
-    route<PathSpec extends string>(
+    a(args: Args, ...fragment: HTMLChildFragment<HTMLAnchorElement>[]) {
+        const path = this.getUrl(args);
+        return a({
+            href: path,
+            onclick(ev: MouseEvent) {
+                ev.preventDefault();
+                pushPath(path);
+            }
+        }, ...fragment);
+    }
+
+    getUrl(args: Args): string {
+        const remainingArgs = { ...args as { [key: string]: unknown } };
+        let path = this.getPath(remainingArgs);
+        let hasQuery = false;
+        for (const key in remainingArgs) {
+            const arg = encodeURIComponent(remainingArgs[key]!.toString());
+            path = hasQuery ? `${path}&${key}=${arg}` : `${path}?${key}=${arg}`;
+            hasQuery = true;
+        }
+        return path;
+    }
+
+    private getPath(remainingArgs: { [key: string]: unknown }): string {
+        return (this.parent?.getPath(remainingArgs) ?? '') + this.getOwnPath(remainingArgs);
+    }
+
+    private getOwnPath(remainingArgs: { [key: string]: unknown }): string {
+        let path = this.pathSpec;
+        const queryIndex = this.pathSpec.indexOf('?');
+        if (queryIndex >= 0) {
+            path = path.substring(0, queryIndex);
+        }
+        const parts = path.split('/');
+        for (let i = 0; i < parts.length; ++i) {
+            const temp = parts[i]!.split(':');
+            if (temp.length === 2) {
+                const key = temp[0]!;
+                if (remainingArgs[key] === undefined) {
+                    throw new Error('missing argument: ' + key);
+                }
+                parts[i] = encodeURIComponent(remainingArgs[key]!.toString());
+                delete remainingArgs[key];
+            }
+        }
+        return parts.join('/');
+    }
+
+    subRoute<PathSpec extends string, ChildArgs = Args & ParsePathSpec<PathSpec>>(
         pathSpec: PathSpec,
-        makeContent: (args: FunctionsOf<Args & ParsePathSpec<PathSpec>>) => FragmentItem
-    ): Route<Args & ParsePathSpec<PathSpec>> {
-        const route = new Route(pathSpec, makeContent);
+        makeContent: (args: FunctionsOf<ChildArgs>) => FragmentItem | Promise<FragmentItem>
+    ): Route<ChildArgs> {
+        const route = new Route<ChildArgs>(this, pathSpec, makeContent);
         this.subRoutes.push(route);
         return route as any;
     }
@@ -275,7 +328,7 @@ export class Route<Args> {
     }
 
     private update(): void {
-        if (!this.fragmentCreated) {
+        if (!this.contentAppended) {
             if (!this.args) {
                 throw new Error('args not yet parsed');
             }
@@ -283,8 +336,8 @@ export class Route<Args> {
             for (const key in this.args) {
                 argFuncs[key] = () => this.args![key];
             }
-            this.component.appendFragment(this.makeFragment(argFuncs));
-            this.fragmentCreated = true;
+            this.component.appendLazyFragment(() => this.makeContent(argFuncs));
+            this.contentAppended = true;
         }
 
         if (this.outlet) {
@@ -302,14 +355,14 @@ export class Route<Args> {
 
 
 export class Router extends Route<{}> {
-    constructor(makeFragment?: () => FragmentItem) {
-        super('', makeFragment ?? (() => Outlet()));
+    constructor(makeContent?: () => FragmentItem) {
+        super(null, '', makeContent ?? (() => Outlet()));
     }
 
     init(): void {
         this.component.addMountListener(this.onMountRouter);
         this.component.addUnmountListener(this.onUnmountRouter);
-        this.tryMatch(document.location.pathname, {});
+        this.tryMatch(document.location.pathname);
     }
 
     private onMountRouter = () => {
@@ -347,14 +400,3 @@ export function replacePath(path: string): void {
     }
 }
 
-const { a } = HTML;
-
-export function Link(path: string, fragment: HTMLChildFragment<HTMLAnchorElement>) {
-    return a(fragment, {
-        href: path,
-        onclick(ev: MouseEvent) {
-            ev.preventDefault();
-            pushPath(path);
-        }
-    });
-}

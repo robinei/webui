@@ -1,21 +1,36 @@
-import { Component, HTML } from './core';
-import { Router, Outlet, Link } from './routing';
-
-import { PreferencesPage, EditPreferencePage, PreferencesListPage } from './pages/prefs';
-import { TestPage } from './pages/test';
-import { TodoPage } from './pages/todo';
-import { BenchmarkPage } from './pages/bench';
-
+import { Component, FragmentItem, HTML, Suspense } from './core';
+import { Router, Outlet } from './routing';
 
 const { nav, main, button } = HTML;
 
-function RootPage() {
+
+const router = new Router(RootPage);
+
+export const testRoute = router.subRoute('/test', async () => (await import('./pages/test')).TestPage());
+
+export const todoRoute = router.subRoute('/todo', async () => (await import('./pages/todo')).TodoPage());
+
+export const homeRoute = router.subRoute('/', DefaultPage);
+
+export const benchRoute = router.subRoute('/bench', async () => (await import('./pages/bench')).BenchmarkPage());
+
+export const prefsRoute = router.subRoute('/prefs', async () => (await import('./pages/prefs')).PreferencesPage());
+export const editPrefRoute = prefsRoute.subRoute('/name:string', async ({name}) => (await import('./pages/prefs')).EditPreferencePage({name}));
+export const prefListRoute = prefsRoute.subRoute('', async () => (await import('./pages/prefs')).PreferencesListPage());
+
+router.init();
+
+new Component(document.body).appendChild(router.component).mount();
+
+
+
+function RootPage(): FragmentItem {
     return [
         nav(
-            Link('/test', 'Test'),
-            Link('/todo', 'Todo'),
-            Link('/prefs', 'Prefs'),
-            Link('/bench', 'Benchmark'),
+            testRoute.a({}, 'Test'),
+            todoRoute.a({}, 'Todo'),
+            prefsRoute.a({}, 'Prefs'),
+            benchRoute.a({}, 'Benchmark'),
             button('Print tree', {
                 onclick() {
                     console.log(dumpComponentTree(this.getRoot()));
@@ -25,33 +40,13 @@ function RootPage() {
                 onclick() { }
             }),
         ),
-        main(Outlet())
+        main(Suspense('Loading...', Outlet()))
     ];
 }
 
-function DefaultPage() {
+function DefaultPage(): FragmentItem {
     return 'Welcome!';
 }
-
-
-
-const router = new Router(RootPage);
-router.route('/test', TestPage);
-router.route('/todo', TodoPage);
-router.route('/', DefaultPage);
-{
-    const prefs = router.route('/prefs', PreferencesPage);
-    prefs.route('/name:string', EditPreferencePage);
-    prefs.route('', PreferencesListPage);
-}
-router.route('/bench', BenchmarkPage);
-router.init();
-
-new Component(document.body).appendChild(router.component).mount();
-
-
-
-
 
 function dumpComponentTree(root: Component): string {
     const result: string[] = [];

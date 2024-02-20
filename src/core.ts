@@ -542,10 +542,6 @@ export class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    appendChild(child: Component): Component<N> {
-        return this.insertBefore(child);
-    }
-
     insertAfter(child: Component, reference: Component | undefined): Component<N> {
         return this.insertBefore(child, reference?.nextSibling);
     }
@@ -556,18 +552,6 @@ export class Component<N extends Node | null = Node | null> {
         }
         this.insertBefore(replacement, replaced);
         this.removeChild(replaced);
-        return this;
-    }
-
-    appendFragment(fragment: FragmentItem): Component<N> {
-        iterateFragment(fragment, this.appendChild.bind(this));
-        return this;
-    }
-
-    appendChildren(children: Component[]): Component<N> {
-        for (const child of children) {
-            this.appendChild(child);
-        }
         return this;
     }
 
@@ -583,6 +567,45 @@ export class Component<N extends Node | null = Node | null> {
             case 'remove': this.removeChild(op.value); break;
             }
         }
+        return this;
+    }
+
+    appendChild(child: Component): Component<N> {
+        return this.insertBefore(child);
+    }
+
+    appendChildren(children: Component[]): Component<N> {
+        for (const child of children) {
+            this.appendChild(child);
+        }
+        return this;
+    }
+
+    appendFragment(fragment: FragmentItem): Component<N> {
+        iterateFragment(fragment, this.appendChild.bind(this));
+        return this;
+    }
+
+    appendLazyFragment(fragmentFunc: (this: Component<N>) => FragmentItem | Promise<FragmentItem>): Component<N> {
+        const boundFragmentFunc = fragmentFunc.bind(this);
+        let loaded = false;
+        this.addMountListener(function onMountLazy() {
+            if (loaded) {
+                return;
+            }
+            loaded = true;
+            const bodyResult = boundFragmentFunc();
+            if (!(bodyResult instanceof Promise)) {
+                this.clear();
+                this.appendFragment(bodyResult);
+                return;
+            }
+            this.trackAsyncLoad(async function loadLazyBody() {
+                const loadedBody = await bodyResult;
+                this.clear(); // clear to support adding children that will be displayed while loading
+                this.appendFragment(loadedBody);
+            });
+        });
         return this;
     }
 
@@ -1200,37 +1223,18 @@ export function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: Fragme
     return component;
 }
 
-export function Unsuspense(...bodyFragment: FragmentItem[]) {
-    const component = new Component(null, 'Unsuspense');
-    component.setSuspenseHandler(function noopSuspenseHandler(count) { });
+export function Immediate(...bodyFragment: FragmentItem[]) {
+    const component = new Component(null, 'Immediate');
+    component.setSuspenseHandler(function noopSuspenseHandler() { });
     component.appendFragment(bodyFragment);
     return component;
 }
 
 
-export function Lazy(body: (this: Component<null>) => FragmentItem | Promise<FragmentItem>): Component<null> {
-    const component = new Component(null, 'Lazy');
-    const boundBody = body.bind(component);
-    let loaded = false;
-    component.addMountListener(function onMountLazy() {
-        if (loaded) {
-            return;
-        }
-        loaded = true;
-        const bodyResult = boundBody();
-        if (!(bodyResult instanceof Promise)) {
-            component.clear();
-            component.appendFragment(bodyResult);
-            return;
-        }
-        component.trackAsyncLoad(async function loadLazyBody() {
-            const loadedBody = await bodyResult;
-            component.clear(); // clear to support adding children that will be displayed while loading
-            component.appendFragment(loadedBody);
-        });
-    });
-    return component;
+export function Lazy(bodyFunc: (this: Component<null>) => FragmentItem | Promise<FragmentItem>): Component<null> {
+    return new Component(null, 'Lazy').appendLazyFragment(bodyFunc);
 }
+
 
 export function Async(obj: Promise<FragmentItem> | AsyncGenerator<FragmentItem>): Component<null> {
     const component = new Component(null, 'Async');

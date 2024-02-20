@@ -1,5 +1,5 @@
 
-import { HTML, Lazy } from '../core';
+import { FragmentItem, HTML, Lazy, Immediate } from '../core';
 import { asyncDelay, Semaphore } from '../util';
 
 function benchmark(iters: number, func: () => void): number {
@@ -31,11 +31,11 @@ function Benchmark(desc: string, iters: number, func: () => void) {
     );
 }
 
-export function BenchmarkPage() {
+export function BenchmarkPage(): FragmentItem {
     const domIters = 100000;
     const argIters = 10000000;
 
-    return div(
+    return Immediate(div(
         h4('Benchmarks'),
         h5('DOM creation'),
         Benchmark('Component', domIters, () => {
@@ -63,7 +63,7 @@ export function BenchmarkPage() {
         Benchmark('Arguments', argIters, () => {
             testArguments(1,2,3,4,5,6,7,8,9);
         }),
-    );
+    ));
 }
 
 

@@ -1,4 +1,4 @@
-import { HTML, If, Match, For, Lazy, When } from '../core';
+import { FragmentItem, HTML, If, Match, For, Lazy, When } from '../core';
 
 interface TodoItemModel {
     title: string;
@@ -254,7 +254,7 @@ function TodoListView(list: TodoListModel) {
     );
 }
 
-export function TodoPage() {
+export function TodoPage(): FragmentItem {
     const model = new TodoListModel().addItem('Bake bread').addItem('Clean dishes').addItem('Take out trash').addItem('Buy groceries');
     return TodoListView(model);
 }

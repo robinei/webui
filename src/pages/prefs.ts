@@ -1,5 +1,6 @@
-import { HTML, For } from '../core';
-import { Outlet, Link } from '../routing';
+import { FragmentItem, HTML, For } from '../core';
+import { Outlet } from '../routing';
+import { prefsRoute, editPrefRoute } from '..';
 
 
 interface Preference {
@@ -36,7 +37,7 @@ function setPreference(name: string, value: string) {
 
 const { div, hr, br, ul, li, input } = HTML;
 
-export function PreferencesPage() {
+export function PreferencesPage(): FragmentItem {
     return div(
         'Preferences:',
         hr(),
@@ -45,7 +46,7 @@ export function PreferencesPage() {
     );
 }
 
-export function PreferencesListPage() {
+export function PreferencesListPage(): FragmentItem {
     return ul(
         For(() => preferences, pref =>
             li(
@@ -53,13 +54,13 @@ export function PreferencesListPage() {
                 ': ',
                 () => pref.value,
                 ' ',
-                Link(`/prefs/${pref.name}`, 'edit'),
+                editPrefRoute.a({name: pref.name}, 'edit'),
             )
         )
     );
 }
 
-export function EditPreferencePage({name}: { name(): string }) {
+export function EditPreferencePage({name}: { name(): string }): FragmentItem {
     const textInput = input({
         value: () => getPreference(name()),
         oninput() {
@@ -71,6 +72,6 @@ export function EditPreferencePage({name}: { name(): string }) {
         name,
         br(),
         textInput,
-        Link('/prefs', 'done'),
+        prefsRoute.a({}, 'done'),
     );
 }

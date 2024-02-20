@@ -1,6 +1,6 @@
 import { errorDescription, asyncDelay } from '../util';
 import { Value, mapValue, newProp, Context, Component, FragmentItem,
-    HTML, With, If, Repeat, Suspense, Unsuspense, ErrorBoundary, Lazy, Async } from '../core';
+    HTML, With, If, Repeat, Suspense, Immediate, ErrorBoundary, Lazy, Async } from '../core';
 
 const { span, br, button, table, tr, td, input, pre, b } = HTML;
 
@@ -15,7 +15,7 @@ async function* AsyncTest() {
 }
 
 
-export function TestPage(): Component {
+export function TestPage(): FragmentItem {
     return ErrorBoundary(ErrorFallback, function tryTestComponent() {
         const [cb1, checked1] = CheckBox();
         const [cb2, checked2] = CheckBox();
@@ -30,7 +30,7 @@ export function TestPage(): Component {
             this.update();
         });
 
-        return Suspense('Loading...',
+        return [
             cb1, cb2, cb3, cb4,
             If(checked1,
                 span('a')),
@@ -41,8 +41,6 @@ export function TestPage(): Component {
             If(checked4,
                 span('d')),
             
-            br(),
-            TestContext.Consume(value => ['Context value: ', value]),
             br(),
             button('Fail', {
                 onclick() {
@@ -56,7 +54,7 @@ export function TestPage(): Component {
                 return [
                     'Loaded 1',
                     br(),
-                    Unsuspense(
+                    Immediate(
                         [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300].map(t => Async(asyncDelay(t).then(() => b(`${t},`)))),
                         br(),
                         Async(AsyncTest()),
@@ -79,7 +77,7 @@ export function TestPage(): Component {
                         tr(
                             Repeat(width, x =>
                                 td(((x+1)*(y+1)*s).toString())))))),
-        ).provideContext(TestContext, 'jalla');
+        ];
 
         function Slider(value: Value<number>, min: number, max: number) {
             return input({
