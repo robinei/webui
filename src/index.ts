@@ -6,31 +6,26 @@ const { nav, main, button } = HTML;
 
 const router = new Router(RootPage);
 
-export const testRoute = router.subRoute('/test', async () => (await import('./pages/test')).TestPage());
-
-export const todoRoute = router.subRoute('/todo', async () => (await import('./pages/todo')).TodoPage());
-
 export const homeRoute = router.subRoute('/', DefaultPage);
-
+export const testRoute = router.subRoute('/test', async () => (await import('./pages/test')).TestPage());
+export const todoRoute = router.subRoute('/todo', async () => (await import('./pages/todo')).TodoPage());
 export const benchRoute = router.subRoute('/bench', async () => (await import('./pages/bench')).BenchmarkPage());
 
 export const prefsRoute = router.subRoute('/prefs', async () => (await import('./pages/prefs')).PreferencesPage());
+export const prefListRoute = prefsRoute.subRoute('/', async () => (await import('./pages/prefs')).PreferencesListPage());
 export const editPrefRoute = prefsRoute.subRoute('/name:string', async ({name}) => (await import('./pages/prefs')).EditPreferencePage({name}));
-export const prefListRoute = prefsRoute.subRoute('', async () => (await import('./pages/prefs')).PreferencesListPage());
 
-router.init();
-
-new Component(document.body).appendChild(router.component).mount();
+router.mount(document.body);
 
 
 
 function RootPage(): FragmentItem {
     return [
         nav(
-            testRoute.a({}, 'Test'),
-            todoRoute.a({}, 'Todo'),
-            prefsRoute.a({}, 'Prefs'),
-            benchRoute.a({}, 'Benchmark'),
+            testRoute.Link({}, 'Test'),
+            todoRoute.Link({}, 'Todo'),
+            prefsRoute.Link({}, 'Preferences'),
+            benchRoute.Link({}, 'Benchmark'),
             button('Print tree', {
                 onclick() {
                     console.log(dumpComponentTree(this.getRoot()));

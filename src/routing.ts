@@ -4,76 +4,80 @@ import { deepEqual } from './util';
 const { a } = HTML;
 
 
-type ParsePathSpec<P extends string> =
+type ParseUrlSpec<P extends string> =
     P extends `${infer Prefix extends string}/${infer Rest extends string}`
-        ? ParsePathSpecTypedKey<Prefix> & ParsePathSpec<Rest>
-        : ParsePathSpecSuffix<P>;
+        ? ParseUrlSpecTypedKey<Prefix> & ParseUrlSpec<Rest>
+        : ParseUrlSpecSuffix<P>;
 
-type ParsePathSpecSuffix<S extends string> =
+type ParseUrlSpecSuffix<S extends string> =
     S extends `${infer Prefix extends string}?${infer Query extends string}`
-        ? ParsePathSpecTypedKey<Prefix> & Partial<ParsePathSpecQuery<Query>>
-        : ParsePathSpecTypedKey<S>;
+        ? ParseUrlSpecTypedKey<Prefix> & Partial<ParseUrlSpecQuery<Query>>
+        : ParseUrlSpecTypedKey<S>;
 
-type ParsePathSpecQuery<Q extends string> =
+type ParseUrlSpecQuery<Q extends string> =
     Q extends `${infer Prefix extends string}&${infer Rest extends string}`
-        ? ParsePathSpecTypedKey<Prefix> & ParsePathSpecQuery<Rest>
-        : ParsePathSpecTypedKey<Q>;
+        ? ParseUrlSpecTypedKey<Prefix> & ParseUrlSpecQuery<Rest>
+        : ParseUrlSpecTypedKey<Q>;
 
-type ParsePathSpecTypedKey<S extends string> =
+type ParseUrlSpecTypedKey<S extends string> =
     S extends `${infer Key extends string}:${infer Type extends string}`
-        ? { [_ in Key]: ParsePathSpecType<Type> }
+        ? { [_ in Key]: ParseUrlSpecType<Type> }
         : {};
 
-type ParsePathSpecType<S extends string> =
+type ParseUrlSpecType<S extends string> =
     S extends 'string' ? string :
     S extends 'number' ? number :
     S extends 'boolean' ? boolean : unknown;
-
-type JoinPath<A extends string, B extends string> =
-    A extends `${infer AP extends string}/`
-        ? (B extends `/${infer BS extends string}` ? `${AP}/${BS}` : `${AP}/${B}`)
-        : (B extends `/${infer BS extends string}` ? `${A}/${BS}` : `${A}/${B}`);
 
 type FunctionsOf<T> = {
     [K in keyof T]-?: () => T[K];
 };
 
 
-type Test = FunctionsOf<ParsePathSpec<'/hello/foo:string/test/bar:number/asdf?arg:boolean&arg2:number'>>;
+type Test = FunctionsOf<ParseUrlSpec<'/hello/foo:string/test/bar:number/asdf?arg:boolean&arg2:number'>>;
 const test: Test = {} as any;
 
 
 
-type PathMatcher = (path: string, args: { [key: string]: unknown }) => string | false;
+type UrlMatcher = (url: string, args: { [key: string]: unknown }) => string | false;
 
-function parsePathSpec(pathSpec: string): PathMatcher {
-    if (!pathSpec) {
-        return (path, _) => path;
+function parseUrlSpec(spec: string): UrlMatcher {
+    if (spec === '') {
+        return (url, _) => url;
     }
 
-    if (pathSpec.startsWith('/')) {
-        const parseRest = parsePathSpec(pathSpec.substring(1));
-        return (path, args) => {
-            if (path.startsWith('/')) {
-                return parseRest(path.substring(1), args);
+    if (spec.startsWith('/')) {
+        const parseRest = parseUrlSpec(spec.substring(1));
+        return (url, args) => {
+            if (url.startsWith('/')) {
+                return parseRest(url.substring(1), args);
+            }
+            if (url.startsWith('?') || url == '') {
+                return parseRest(url, args);
             }
             return false;
         };
     }
 
-    if (pathSpec.startsWith('?')) {
+    if (spec.startsWith('?')) {
+        if (spec.indexOf('/') >= 0) {
+            throw new Error('found / in query spec: ' + spec);
+        }
         const queryParsers: { [key: string]: (s: string) => unknown } = {};
-        for (const specPart of pathSpec.substring(1).split('&')) {
+        for (const specPart of spec.substring(1).split('&')) {
             const [key, type] = specPart.split(':');
             if (!key || !type) {
                 throw new Error('bad query spec');
             }
             queryParsers[key] = createValueParser(type, true);
         }
-        return (path, args) => {
-            if (path.startsWith('?')) {
+        return (url, args) => {
+            if (url.indexOf('/') >= 0) {
+                return false;
+            }
+            if (url.startsWith('?')) {
                 const query: { [key: string]: string } = {};
-                for (const queryPart of path.substring(1).split('&')) {
+                for (const queryPart of url.substring(1).split('&')) {
                     const [key, value] = queryPart.split('=');
                     if (key && value) {
                         query[key] = value;
@@ -90,53 +94,53 @@ function parsePathSpec(pathSpec: string): PathMatcher {
                         }
                     }
                 }
-            } else if (path) {
+            } else if (url) {
                 return false;
             }
             return '';
         };
     }
 
-    let partEnd = pathSpec.indexOf('/');
+    let partEnd = spec.indexOf('/');
     if (partEnd < 0) {
-        partEnd = pathSpec.indexOf('?');
+        partEnd = spec.indexOf('?');
         if (partEnd < 0) {
-            partEnd = pathSpec.length;
+            partEnd = spec.length;
         }
     }
-    const fragment = pathSpec.substring(0, partEnd);
-    const parseRest = parsePathSpec(pathSpec.substring(partEnd));
+    const fragment = spec.substring(0, partEnd);
+    const parseRest = parseUrlSpec(spec.substring(partEnd));
     const splitFrag = fragment.split(':');
 
     if (splitFrag.length === 1) {
         // no ':' in fragment; match verbatim
-        return (path, args) => {
-            if (path.startsWith(fragment)) {
-                return parseRest(path.substring(fragment.length), args);
+        return (url, args) => {
+            if (url.startsWith(fragment)) {
+                return parseRest(url.substring(fragment.length), args);
             }
             return false;
         };
     }
 
     if (splitFrag.length !== 2) {
-        throw new Error(`bad path spec fragment: ${fragment}`);
+        throw new Error(`bad url spec fragment: ${fragment}`);
     }
 
     // fragment has form '<key>:<type>', like 'category:string', and must be parsed as a value of the specified type
     const [key, type] = splitFrag;
     if (!key || !type) {
-        throw new Error(`bad path spec fragment: ${fragment}`);
+        throw new Error(`bad url spec fragment: ${fragment}`);
     }
 
     const parser = createValueParser(type);
 
-    return (path, args) => {
-        const i = path.indexOf('/');
-        const prefix = path.substring(0, i < 0 ? path.length : i);
+    return (url, args) => {
+        const i = url.indexOf('/');
+        const prefix = url.substring(0, i < 0 ? url.length : i);
         const value = parser(prefix);
         if (value !== null) {
             args[key] = value;
-            return parseRest(path.substring(prefix.length), args);
+            return parseRest(url.substring(prefix.length), args);
         }
         return false;
     };
@@ -166,13 +170,13 @@ function createValueParser(type: string, allowEmpty: boolean = false): (s: strin
                 default: return null;
             }
         };
-        default: throw new Error(`unknown type '${type}' in path spec`);
+        default: throw new Error(`unknown type '${type}' in url spec`);
     }
 }
 
 
 
-function runParsePathSpecTests() {
+function runParseUrlSpecTests() {
     runTest('/', '/', '', {});
     runTest('/', '/foo', 'foo', {});
     runTest('/foo', '/foo', '', {});
@@ -186,27 +190,31 @@ function runParsePathSpecTests() {
     runTest('/foo/b:boolean', '/foo/', false, {});
     runTest('/foo/n:number', '/foo/', false, {});
     runTest('/foo/s:string', '/foo/', false, {});
+    runTest('/', '', '', {});
+    runTest('/?arg:number', '?arg=123', '', {arg:123});
+    runTest('/foo/', '/foo', '', {});
+    runTest('/foo/?arg:number', '/foo?arg=123', '', {arg:123});
 
-    function runTest(spec: string, path: string, expectedResult: string | false, expectedArgs: { [key: string]: unknown }): void {
-        const matcher = parsePathSpec(spec);
+    function runTest(spec: string, url: string, expectedResult: string | false, expectedArgs: { [key: string]: unknown }): void {
+        const matcher = parseUrlSpec(spec);
         const args: { [key: string]: unknown } = {};
-        const result = matcher(path, args);
+        const result = matcher(url, args);
         console.assert(result === expectedResult);
         console.assert(deepEqual(args, expectedArgs));
     }
 }
-runParsePathSpecTests();
+runParseUrlSpecTests();
 
 
 
-const RouteContext = new Context<Route<any>>('RouteContext');
+const RouteContext = new Context<Route<unknown>>('RouteContext');
 
 export function Outlet() {
     const component = new Component(null, 'Outlet');
 
     component.addMountedListener(function onMountedOutlet() {
         const route = component.getContext(RouteContext);
-        route.internalSetOutlet(component);
+        (route as any).setOutlet(component);
     });
     
     return component;
@@ -214,49 +222,62 @@ export function Outlet() {
 
 
 export class Route<Args> {
-    private readonly subRoutes: Route<any>[] = [];
-    private readonly matcher: PathMatcher;
+    private readonly subRoutes: Route<unknown>[] = [];
+    private readonly matcher: UrlMatcher;
     private contentAppended = false;
 
     private args?: { [key: string]: unknown };
 
-    private matchedSubRoute?: Route<any>;
-    private outletSubRoute?: Route<any>; // the sub-route whose component we have currently mounted in our fragment's Outlet
-    private outlet?: Component;
+    private matchedSubRoute?: Route<unknown>;
+    private outletSubRoute?: Route<unknown>; // the sub-route whose component we have currently mounted in our fragment's Outlet
+    protected outlet?: Component;
 
-    readonly component: Component<null>;
+    protected readonly component: Component<null>;
 
     protected constructor(
         private readonly parent: Route<unknown> | null,
-        readonly pathSpec: string,
+        private readonly urlSpec: string,
         private readonly makeContent: (args: any) => FragmentItem | Promise<FragmentItem>
     ) {
-        this.matcher = parsePathSpec(pathSpec);
-        const name = pathSpec ? `Route[${pathSpec}]` : 'Router';
+        this.matcher = parseUrlSpec(urlSpec);
+        const name = urlSpec ? `Route[${urlSpec}]` : 'Router';
         this.component = new Component(null, name).provideContext(RouteContext, this);
     }
 
-    a(args: Args, ...fragment: HTMLChildFragment<HTMLAnchorElement>[]) {
-        const path = this.getUrl(args);
-        return a({
-            href: path,
-            onclick(ev: MouseEvent) {
-                ev.preventDefault();
-                pushPath(path);
-            }
-        }, ...fragment);
+    subRoute<UrlSpec extends string, ChildArgs = Args & ParseUrlSpec<UrlSpec>>(
+        urlSpec: UrlSpec,
+        makeContent: (args: FunctionsOf<ChildArgs>) => FragmentItem | Promise<FragmentItem>
+    ): Route<ChildArgs> {
+        if (!urlSpec.startsWith('/')) {
+            throw new Error('URL spec must start with /');
+        }
+        const route = new Route<ChildArgs>(this, urlSpec, makeContent);
+        this.subRoutes.push(route);
+        return route;
+    }
+
+    Link(args: Args, ...fragment: HTMLChildFragment<HTMLAnchorElement>[]) {
+        return Link(this.getUrl(args), ...fragment);
+    }
+
+    push(args: Args): void {
+        this.component.getContext(RouterContext).pushUrl(this.getUrl(args));
+    }
+
+    replace(args: Args): void {
+        this.component.getContext(RouterContext).replaceUrl(this.getUrl(args));
     }
 
     getUrl(args: Args): string {
         const remainingArgs = { ...args as { [key: string]: unknown } };
-        let path = this.getPath(remainingArgs);
+        let url = this.getPath(remainingArgs);
         let hasQuery = false;
         for (const key in remainingArgs) {
             const arg = encodeURIComponent(remainingArgs[key]!.toString());
-            path = hasQuery ? `${path}&${key}=${arg}` : `${path}?${key}=${arg}`;
+            url = hasQuery ? `${url}&${key}=${arg}` : `${url}?${key}=${arg}`;
             hasQuery = true;
         }
-        return path;
+        return url;
     }
 
     private getPath(remainingArgs: { [key: string]: unknown }): string {
@@ -264,8 +285,8 @@ export class Route<Args> {
     }
 
     private getOwnPath(remainingArgs: { [key: string]: unknown }): string {
-        let path = this.pathSpec;
-        const queryIndex = this.pathSpec.indexOf('?');
+        let path = this.urlSpec;
+        const queryIndex = this.urlSpec.indexOf('?');
         if (queryIndex >= 0) {
             path = path.substring(0, queryIndex);
         }
@@ -284,50 +305,31 @@ export class Route<Args> {
         return parts.join('/');
     }
 
-    subRoute<PathSpec extends string, ChildArgs = Args & ParsePathSpec<PathSpec>>(
-        pathSpec: PathSpec,
-        makeContent: (args: FunctionsOf<ChildArgs>) => FragmentItem | Promise<FragmentItem>
-    ): Route<ChildArgs> {
-        const route = new Route<ChildArgs>(this, pathSpec, makeContent);
-        this.subRoutes.push(route);
-        return route as any;
-    }
-
-    tryMatch(path: string, parentArgs?: { [key: string]: unknown }): boolean {
+    protected tryMatch(url: string, parentArgs?: { [key: string]: unknown }): boolean {
         const args = { ...parentArgs };
-        const restOfPath = this.matcher(path, args);
-        if (restOfPath === false) {
+        const restOfUrl = this.matcher(url, args);
+        if (restOfUrl === false) {
             return false;
         }
         
         this.args = args;
 
         for (const route of this.subRoutes) {
-            if (route.tryMatch(restOfPath, args)) {
+            if (route.tryMatch(restOfUrl, args)) {
                 this.matchedSubRoute = route;
                 this.update();
                 return true;
             }
         }
 
-        if (restOfPath) {
-            return false; // unmatched path remnant
+        if (restOfUrl) {
+            return false; // unmatched url remnant
         }
 
         return true;
     }
 
-    internalSetOutlet(outlet: Component): void {
-        if (this.outlet !== outlet) {
-            if (this.outlet) {
-                throw new Error('outlet already set');
-            }
-            this.outlet = outlet;
-            this.update();
-        }
-    }
-
-    private update(): void {
+    protected update(): void {
         if (!this.contentAppended) {
             if (!this.args) {
                 throw new Error('args not yet parsed');
@@ -351,52 +353,70 @@ export class Route<Args> {
             }
         }
     }
+
+    protected setOutlet(outlet: Component): void {
+        if (this.outlet !== outlet) {
+            if (this.outlet) {
+                throw new Error('outlet already set');
+            }
+            this.outlet = outlet;
+            this.update();
+        }
+    }
 }
 
+
+const RouterContext = new Context<Router>('RouterContext');
 
 export class Router extends Route<{}> {
     constructor(makeContent?: () => FragmentItem) {
         super(null, '', makeContent ?? (() => Outlet()));
+        this.component.addMountListener(() => window.addEventListener('popstate', this.tryMatchLocation));
+        this.component.addUnmountListener(() => window.removeEventListener('popstate', this.tryMatchLocation));
+        this.component.provideContext(RouterContext, this);
     }
 
-    init(): void {
-        this.component.addMountListener(this.onMountRouter);
-        this.component.addUnmountListener(this.onUnmountRouter);
-        this.tryMatch(document.location.pathname);
+    mount(container: HTMLElement): Component<null> {
+        this.tryMatchLocation();
+        new Component(container).appendChild(this.component).mount();
+        return this.component;
     }
 
-    private onMountRouter = () => {
-        window.addEventListener('popstate', this.onPopState);
-        mountedRouters.push(this);
-    };
-
-    private onUnmountRouter = () => {
-        const index = mountedRouters.indexOf(this);
-        if (index >= 0) {
-            mountedRouters.splice(index, 1);
+    pushUrl(url: string): boolean {
+        if (this.tryMatch(url)) {
+            history.pushState(null, '', url);
+            return true;
+        } else {
+            console.warn('pushUrl with unknown url: ' + url);
+            return false;
         }
-        window.removeEventListener('popstate', this.onPopState);
-    };
-
-    private onPopState = (_: PopStateEvent) => {
-        this.tryMatch(document.location.pathname);
-    };
-}
-
-
-const mountedRouters: Router[] = [];
-
-export function pushPath(path: string): void {
-    history.pushState(null, '', path);
-    for (const r of mountedRouters) {
-        r.tryMatch(path);
     }
-}
 
-export function replacePath(path: string): void {
-    history.replaceState(null, '', path);
-    for (const r of mountedRouters) {
-        r.tryMatch(path);
+    replaceUrl(url: string): boolean {
+        if (this.tryMatch(url)) {
+            history.replaceState(null, '', url);
+            return true;
+        } else {
+            console.warn('replaceUrl with unknown url: ' + url);
+            return false;
+        }
     }
+
+    private tryMatchLocation = () => {
+        const url = document.location.pathname + document.location.search;
+        if (!this.tryMatch(url)) {
+            console.warn('going back to / due to unknown location: ' + url);
+            this.replaceUrl('/');
+        }
+    };
 }
 
+function Link(url: string, ...fragment: HTMLChildFragment<HTMLAnchorElement>[]) {
+    return a({
+        href: url,
+        onclick(ev: MouseEvent) {
+            ev.preventDefault();
+            this.getContext(RouterContext).pushUrl(url);
+        }
+    }, ...fragment);
+}

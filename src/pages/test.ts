@@ -1,10 +1,8 @@
 import { errorDescription, asyncDelay } from '../util';
-import { Value, mapValue, newProp, Context, Component, FragmentItem,
-    HTML, With, If, Repeat, Suspense, Immediate, ErrorBoundary, Lazy, Async } from '../core';
+import { Value, mapValue, newProp, FragmentItem,
+    HTML, With, If, Repeat, Immediate, ErrorBoundary, Lazy, Async } from '../core';
 
 const { span, br, button, table, tr, td, input, pre, b } = HTML;
-
-const TestContext = new Context<string>('TestContext');
 
 
 async function* AsyncTest() {

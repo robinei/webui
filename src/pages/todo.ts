@@ -196,6 +196,9 @@ function TodoListView(list: TodoListModel) {
                 onAddText();
             }
         },
+        onmounted() {
+            setTimeout(() => textInput.node.focus(), 25);
+        },
     });
 
     function onAddText() {

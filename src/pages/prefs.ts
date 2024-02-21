@@ -54,7 +54,7 @@ export function PreferencesListPage(): FragmentItem {
                 ': ',
                 () => pref.value,
                 ' ',
-                editPrefRoute.a({name: pref.name}, 'edit'),
+                editPrefRoute.Link({name: pref.name}, 'edit'),
             )
         )
     );
@@ -65,13 +65,21 @@ export function EditPreferencePage({name}: { name(): string }): FragmentItem {
         value: () => getPreference(name()),
         oninput() {
             setPreference(name(), textInput.node.value);
-        }
+        },
+        onkeydown(ev) {
+            if (ev.key === 'Enter') {
+                prefsRoute.push({});
+            }
+        },
+        onmounted() {
+            setTimeout(() => textInput.node.focus(), 25);
+        },
     });
     return div(
         'Editing ',
         name,
         br(),
         textInput,
-        prefsRoute.a({}, 'done'),
+        prefsRoute.Link({}, 'done'),
     );
 }

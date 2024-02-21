@@ -83,14 +83,14 @@ type PropertyAttributes<N> = {
     ]?: K extends 'style' ? Styles : Value<N[K]>;
 };
 
-type EventAttributes<N> = {
+type EventAttributes<N extends Node | null> = {
     [K in keyof N as
         K extends string ? (
             N[K] extends (Function | null | undefined) ?
                 (K extends `on${string}` ? K : never) :
                 never
         ) : never
-    ]?: RewriteThisParameter<N[K]>;
+    ]?: RewriteThisParameter<N[K], N>;
 };
 
 type ComponentAttributes<N extends Node | null> = {
@@ -102,9 +102,9 @@ type ComponentAttributes<N extends Node | null> = {
 
 export type Attributes<N extends Node | null> = PropertyAttributes<N> & EventAttributes<N> & ComponentAttributes<N>;
 
-type RewriteThisParameter<F> =
-    F extends (this: infer _, ...args: infer Args) => infer Ret ? (this: Component, ...args: Args) => Ret :
-    F extends (...args: infer Args) => infer Ret ? (this: Component, ...args: Args) => Ret : never;
+type RewriteThisParameter<F, N extends Node | null> =
+    F extends (this: infer _, ...args: infer Args) => infer Ret ? (this: Component<N>, ...args: Args) => Ret :
+    F extends (...args: infer Args) => infer Ret ? (this: Component<N>, ...args: Args) => Ret : never;
 
 
 export class Context<T> {
