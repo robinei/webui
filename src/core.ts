@@ -537,6 +537,13 @@ export class Component<N extends Node | null = Node | null> {
         return this;
     }
 
+    removeChildren(children: Component[]): Component<N> {
+        for (const child of children) {
+            this.removeChild(child);
+        }
+        return this;
+    }
+
     removeFromParent(): Component<N> {
         this.parent?.removeChild(this);
         return this;
@@ -1203,20 +1210,37 @@ export function ErrorBoundary(
 
 
 export function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: FragmentItem[]): Component<null> {
-    const fallback = new Component(null, 'SuspenseFallback').appendFragment(fallbackFragment);
-    const body = new Component(null, 'SuspenseBody').appendFragment(bodyFragment);
     const component = new Component(null, 'Suspense');
-    component.appendChild(body);
-    body.setSuspenseHandler(function suspenseHandler(count) {
+    
+    const bodyComponents = flattenFragment(bodyFragment);
+    if (bodyComponents.length === 0) {
+        return component;
+    }
+    
+    const fallbackComponents = flattenFragment(fallbackFragment);
+    for (const c of fallbackComponents) {
+        c.setSuspenseHandler(function fallbackSuspenseGuard(count) {
+            if (count > 0) {
+                throw new Error('Suspense fallback must not cause suspension');
+            }
+        });
+    }
+    
+    component.appendChildren(bodyComponents);
+    component.setSuspenseHandler(function suspenseHandler(count) {
         if (count > 0) {
-            if (!body.isDetached()) {
-                body.setDetached(true);
-                component.appendChild(fallback);
+            if (!bodyComponents[0]!.isDetached()) {
+                for (const c of bodyComponents) {
+                    c.setDetached(true);
+                }
+                component.appendChildren(fallbackComponents);
             }
         } else {
-            if (body.isDetached()) {
-                component.removeChild(fallback);
-                body.setDetached(false);
+            if (bodyComponents[0]!.isDetached()) {
+                component.removeChildren(fallbackComponents);
+                for (const c of bodyComponents) {
+                    c.setDetached(false);
+                }
             }
         }
     });
