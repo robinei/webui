@@ -1276,33 +1276,10 @@ export function Transient(bodyFunc: (this: Component<null>) => FragmentItem | Pr
     return new Component(null, 'Transient').setLazyContent(bodyFunc, true);
 }
 
-export function Async(obj: Promise<FragmentItem> | AsyncGenerator<FragmentItem>): Component<null> {
+export function Async(promise: Promise<FragmentItem>): Component<null> {
     const component = new Component(null, 'Async');
-    if (obj instanceof Promise) {
-        component.trackAsyncLoad(async function loadAsyncFragment() {
-            component.appendFragment(await obj);
-        });
-    } else {
-        component.trackAsyncLoad(async function loadFirstAsyncGeneratorFragment() {
-            const firstResult = await obj.next();
-            if (!firstResult.done) {
-                component.appendFragment(firstResult.value);
-                (async function loadRemainingAsyncGeneratorFragments() {
-                    try {
-                        for (;;) {
-                            const result = await obj.next();
-                            if (result.done) {
-                                break;
-                            }
-                            component.clear();
-                            component.appendFragment(result.value);
-                        }
-                    } catch (e) {
-                        component.injectError(e);
-                    }
-                })();
-            }
-        });
-    }
+    component.trackAsyncLoad(async function loadAsyncFragment() {
+        component.appendFragment(await promise);
+    });
     return component;
 }

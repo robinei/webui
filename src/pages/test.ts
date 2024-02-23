@@ -5,14 +5,6 @@ import { Value, mapValue, newProp, FragmentItem,
 const { span, br, button, table, tr, td, input, pre, b } = HTML;
 
 
-async function* AsyncTest() {
-    for (let i = 0; i < 100; ++i) {
-        await asyncDelay(1000);
-        yield i;
-    }
-}
-
-
 export function TestPage(): FragmentItem {
     return ErrorBoundary(ErrorFallback, function tryTestComponent() {
         const [cb1, checked1] = CheckBox();
@@ -54,8 +46,6 @@ export function TestPage(): FragmentItem {
                     br(),
                     Immediate(
                         [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300].map(t => Async(asyncDelay(t).then(() => b(`${t},`)))),
-                        br(),
-                        Async(AsyncTest()),
                     ),
                     br(),
                 ];
