@@ -9,7 +9,7 @@ const router = new Router(RootPage);
 export const homeRoute = router.subRoute('/', DefaultPage);
 export const testRoute = router.subRoute('/test', async () => (await import('./pages/test')).TestPage(), true);
 export const todoRoute = router.subRoute('/todo', async () => (await import('./pages/todo')).TodoPage());
-export const benchRoute = router.subRoute('/bench', async () => (await import('./pages/bench')).BenchmarkPage());
+export const benchRoute = router.subRoute('/bench', async () => (await import('./pages/bench')).BenchmarkPage(), true);
 
 export const prefsRoute = router.subRoute('/prefs', async () => (await import('./pages/prefs')).PreferencesPage());
 export const prefListRoute = prefsRoute.subRoute('/', async () => (await import('./pages/prefs')).PreferencesListPage());

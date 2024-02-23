@@ -956,18 +956,16 @@ function visitFragment(fragment: FragmentItem, text: string, handler: (component
     case 'function':
         if (text) {
             handler(StaticText(text));
-            text = '';
         }
         handler(DynamicText(fragment));
-        return text;
+        return '';
     default:
         if (fragment instanceof Component) {
             if (text) {
                 handler(StaticText(text));
-                text = '';
             }
             handler(fragment);
-            return text;
+            return '';
         } else if (Array.isArray(fragment)) {
             for (const item of fragment) {
                 text = visitFragment(item, text, handler);
@@ -1004,13 +1002,13 @@ export const HTML = new Proxy({}, {
             if (arguments.length > 0) {
                 let text = '';
 
-                const handler = component.appendChild.bind(component);
+                const appendChild = component.appendChild.bind(component);
                 for (let i = 0; i < arguments.length; ++i) {
                     const arg = arguments[i];
                     if (isPlainObject(arg)) {
                         component.setAttributes(arg);
                     } else {
-                        text = visitFragment(arg, text, handler);
+                        text = visitFragment(arg, text, appendChild);
                     }
                 }
 
@@ -1041,19 +1039,16 @@ export function StaticText(value: string): Component<Text> {
 }
 
 export function DynamicText(value: Value<Primitive>): Component<Text> {
-    const node = document.createTextNode('');
-    return new Component(node).addValueWatcher(value, function onDynamicTextChanged(primitive) {
-        node.nodeValue = primitive?.toString() ?? '';
+    return new Component(document.createTextNode('')).addValueWatcher(value, function onDynamicTextChanged(primitive) {
+        this.node.nodeValue = primitive?.toString() ?? '';
     });
 }
 
 
 export function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: string): Component<null> {
-    const component = new Component(null, name ?? 'With');
-    component.addValueWatcher(value, function evalWith(v) {
-        component.replaceChildren(flattenFragment(mapper(v)));
+    return new Component(null, name ?? 'With').addValueWatcher(value, function evalWith(v) {
+        this.replaceChildren(flattenFragment(mapper(v)));
     });
-    return component;
 }
 
 export function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> {
@@ -1086,30 +1081,7 @@ export function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => Fragment
     const keyOf = keyFunc ?? (item => item);
     let fragmentMap = new Map<unknown, Component[]>();
 
-    const component = new Component(null, 'For');
-
-    component.addValueWatcher(itemsValue, function checkItems(items) {
-        if (areChildrenEqual(items)) {
-            return;
-        }
-        const newFragmentMap = new Map();
-        const children: Component[] = [];
-        for (const item of items) {
-            const key = keyOf(item);
-            const fragment = fragmentMap.get(key) ?? flattenFragment(renderFunc(item));
-            newFragmentMap.set(key, fragment);
-            for (const child of fragment) {
-                children.push(child);
-            }
-        }
-        component.replaceChildren(children);
-        fragmentMap = newFragmentMap;
-    }, false);
-
-    return component;
-
-    function areChildrenEqual(items: T[]): boolean {
-        let c = component.getFirstChild();
+    function areChildrenEqual(c: Component | undefined, items: T[]): boolean {
         for (const item of items) {
             let fragment = fragmentMap.get(keyOf(item));
             if (!fragment) {
@@ -1124,26 +1096,41 @@ export function For<T>(itemsValue: Value<T[]>, renderFunc: (item: T) => Fragment
         }
         return c === null;
     }
+
+    return new Component(null, 'For').addValueWatcher(itemsValue, function checkItems(items) {
+        if (areChildrenEqual(this.getFirstChild(), items)) {
+            return;
+        }
+        const newFragmentMap = new Map();
+        const children: Component[] = [];
+        for (const item of items) {
+            const key = keyOf(item);
+            const fragment = fragmentMap.get(key) ?? flattenFragment(renderFunc(item));
+            newFragmentMap.set(key, fragment);
+            for (const child of fragment) {
+                children.push(child);
+            }
+        }
+        this.replaceChildren(children);
+        fragmentMap = newFragmentMap;
+    }, false);
 }
 
 export function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component<null> {
-    let fragmentSizes: number[] = [];
-    const component = new Component(null, 'Repeat');
-    component.addValueWatcher(countValue, function onCountChanged(count) {
+    const fragmentSizes: number[] = [];
+    return new Component(null, 'Repeat').addValueWatcher(countValue, function onCountChanged(count) {
         while (fragmentSizes.length > count && fragmentSizes.length > 0) {
             const fragmentSize = fragmentSizes.pop()!;
             for (let i = 0; i < fragmentSize; ++i) {
-                component.removeChild(component.getLastChild()!);
+                this.removeChild(this.getLastChild()!);
             }
         }
         while (fragmentSizes.length < count) {
             const fragment = flattenFragment(itemFunc(fragmentSizes.length));
             fragmentSizes.push(fragment.length);
-            component.appendChildren(fragment);
+            this.appendChildren(fragment);
         }
-
     });
-    return component;
 }
 
 
@@ -1185,11 +1172,9 @@ export function ErrorBoundary(
 
 
 export function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: FragmentItem[]): Component<null> {
-    const component = new Component(null, 'Suspense');
-    
     const bodyComponents = flattenFragment(bodyFragment);
     if (bodyComponents.length === 0) {
-        return component;
+        return new Component(null, 'Suspense');
     }
     
     const fallbackComponents = flattenFragment(fallbackFragment);
@@ -1201,25 +1186,23 @@ export function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: Fragme
         });
     }
     
-    component.appendChildren(bodyComponents);
-    component.setSuspenseHandler(function suspenseHandler(count) {
+    return new Component(null, 'Suspense').appendChildren(bodyComponents).setSuspenseHandler(function suspenseHandler(count) {
         if (count > 0) {
             if (!bodyComponents[0]!.isDetached()) {
                 for (const c of bodyComponents) {
                     c.setDetached(true);
                 }
-                component.appendChildren(fallbackComponents);
+                this.appendChildren(fallbackComponents);
             }
         } else {
             if (bodyComponents[0]!.isDetached()) {
-                component.removeChildren(fallbackComponents);
+                this.removeChildren(fallbackComponents);
                 for (const c of bodyComponents) {
                     c.setDetached(false);
                 }
             }
         }
     });
-    return component;
 }
 
 export function Immediate(...bodyFragment: FragmentItem[]) {
