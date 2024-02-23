@@ -1,6 +1,6 @@
 import { errorDescription, asyncDelay } from '../util';
-import { Value, mapValue, newProp, FragmentItem,
-    HTML, With, If, Repeat, Immediate, ErrorBoundary, Lazy, Async } from '../core';
+import { Value, mapValue, FragmentItem,
+    HTML, With, If, Repeat, Immediate, ErrorBoundary, Lazy, Async, Loading } from '../core';
 
 const { span, br, button, table, tr, td, input, pre, b } = HTML;
 
@@ -12,11 +12,11 @@ export function TestPage(): FragmentItem {
         const [cb3, checked3] = CheckBox();
         const [cb4, checked4] = CheckBox();
 
-        let width = newProp(15);
-        let height = newProp<number>();
-        let scale = newProp(1);
+        let width = 15;
+        let height: number | Loading = Loading;
+        let scale = 1;
         asyncDelay(800).then(() => {
-            height(10);
+            height = 10;
             this.update();
         });
 
@@ -56,27 +56,25 @@ export function TestPage(): FragmentItem {
             Async(asyncDelay(500).then(() => 'Async text')),
             br(),
             
-            'Width: ', Slider(width, 1, 20), br(),
-            'Height: ', Slider(height, 1, 20), br(),
-            'Scale: ', Slider(scale, 1, 10), br(),
+            'Width: ', Slider(()=>width, 1, 20, v=>width=v), br(),
+            'Height: ', Slider(()=>height, 1, 20, v=>height=v), br(),
+            'Scale: ', Slider(()=>scale, 1, 10, v=>scale=v), br(),
             table(
-                With(scale, s =>
-                    Repeat(height, y =>
+                With(()=>scale, s =>
+                    Repeat(()=>height, y =>
                         tr(
-                            Repeat(width, x =>
+                            Repeat(()=>width, x =>
                                 td(((x+1)*(y+1)*s).toString())))))),
         ];
 
-        function Slider(value: Value<number>, min: number, max: number) {
+        function Slider(value: Value<number>, min: number, max: number, onChange: (newValue: number) => void) {
             return input({
                 type: 'range',
                 min: min.toString(),
                 max: max.toString(),
                 value: mapValue(value, v => v.toString()),
-                oninput(ev: Event) {
-                    if (typeof value === 'function') {
-                        value((ev.target as any).value);
-                    }
+                oninput(ev) {
+                    onChange((ev.target as any).value);
                 }
             });
         }

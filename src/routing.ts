@@ -52,7 +52,7 @@ function parseUrlSpec(spec: string): UrlMatcher {
             if (url.startsWith('/')) {
                 return parseRest(url.substring(1), args);
             }
-            if (url.startsWith('?') || url == '') {
+            if (url.startsWith('?') || url === '') {
                 return parseRest(url, args);
             }
             return false;
@@ -89,7 +89,7 @@ function parseUrlSpec(spec: string): UrlMatcher {
                     const value = query[key];
                     if (value !== undefined) {
                         const parsedValue = queryParsers[key]!(value);
-                        if (parsedValue != null) {
+                        if (parsedValue !== null) {
                             args[key] = parsedValue;
                         }
                     }

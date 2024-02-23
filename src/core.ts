@@ -6,12 +6,10 @@ const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
 
+export type Value<T> = T | (() => Result<T>);
+type Result<T> = T | Loading;
 export const Loading: unique symbol = Symbol('Loading');
 export type Loading = typeof Loading;
-
-export type Value<T> = T | ValueFunc<T>;
-export type ValueFunc<T> = (newValue?: T) => ValueFuncResult<T>;
-export type ValueFuncResult<T> = T | Loading;
 
 export function isStaticValue<T>(value: Value<T>): value is T {
     return typeof value !== 'function';
@@ -21,52 +19,20 @@ export function mapValue<T, R>(value: Value<T>, mapper: (v: T) => R): Value<R> {
     if (isStaticValue(value)) {
         return mapper(value);
     }
-    let lastInput: ValueFuncResult<T> | Nil = Nil;
-    let lastOutput: ValueFuncResult<R>;
+    let lastInput: Result<T> | Nil = Nil;
+    let lastOutput: Result<R>;
     return function valueMapper() {
         const v = value();
-        if (v === lastInput) {
-            return lastOutput;
-        }
-        lastInput = v;
-        if (v === Loading) {
-            lastOutput = Loading;
-        } else {
-            lastOutput = mapper(v);
+        if (v !== lastInput) {
+            lastInput = v;
+            lastOutput = v !== Loading ? mapper(v) : Loading;
         }
         return lastOutput;
     };
 }
 
-export function newProp<T>(initialValue?: ValueFuncResult<T>): ValueFunc<T> {
-    let value = initialValue === undefined ? Loading : initialValue;
-    return (newValue?: ValueFuncResult<T>) => {
-        if (newValue !== undefined) {
-            value = newValue;
-        }
-        return value;
-    };
-}
-
-
 
 export type Primitive = null | undefined | string | number | boolean;
-
-export function isPrimitive(value: unknown): value is Primitive {
-    if (value === null) {
-        return true;
-    }
-    switch (typeof value) {
-    case 'undefined':
-    case 'string':
-    case 'number':
-    case 'boolean':
-        return true;
-    }
-    return false;
-}
-
-
 export type FragmentItem = Value<Primitive> | Component | FragmentItem[];
 
 type Styles = {
@@ -111,20 +77,15 @@ export class Context<T> {
     constructor(readonly name: string) {}
 
     Consume(bodyFunc: (value: T) => FragmentItem): Component<null> {
-        const self = this;
-        const component = new Component(null, this.name + '.Consume');
+        const context = this;
         let lastValue: T | Nil = Nil;
-        component.addUpdateListener(function updateContextConsumer() {
-            const value = component.getContext(self);
-            if (value === lastValue) {
-                return;
+        return new Component(null, this.name + '.Consume').addUpdateListener(function updateContextConsumer() {
+            const value = this.getContext(context);
+            if (value !== lastValue) {
+                lastValue = value;
+                this.replaceFragment(bodyFunc(value));
             }
-            lastValue = value;
-            const fragment = bodyFunc(value);
-            component.clear();
-            component.appendFragment(fragment);
         });
-        return component;
     }
 }
 
@@ -339,7 +300,7 @@ export class Component<N extends Node | null = Node | null> {
         }
 
         const valueFunc = value;
-        let lastVal: ValueFuncResult<T> | Nil = Nil;
+        let lastVal: Result<T> | Nil = Nil;
         self.addUpdateListener(function checkIfValueChanged(): void {
             const newVal = valueFunc();
             if (!forceValuePropagation && equalCheck && newVal === lastVal) {
