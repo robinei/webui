@@ -7,7 +7,7 @@ const { nav, main, button } = HTML;
 const router = new Router(RootPage);
 
 export const homeRoute = router.subRoute('/', DefaultPage);
-export const testRoute = router.subRoute('/test', async () => (await import('./pages/test')).TestPage());
+export const testRoute = router.subRoute('/test', async () => (await import('./pages/test')).TestPage(), true);
 export const todoRoute = router.subRoute('/todo', async () => (await import('./pages/todo')).TodoPage());
 export const benchRoute = router.subRoute('/bench', async () => (await import('./pages/bench')).BenchmarkPage());
 

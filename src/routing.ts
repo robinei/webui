@@ -237,7 +237,8 @@ export class Route<Args> {
     protected constructor(
         private readonly parent: Route<unknown> | null,
         private readonly urlSpec: string,
-        private readonly makeContent: (args: any) => FragmentItem | Promise<FragmentItem>
+        private readonly makeContent: (args: any) => FragmentItem | Promise<FragmentItem>,
+        private readonly transient?: boolean
     ) {
         this.matcher = parseUrlSpec(urlSpec);
         const name = urlSpec ? `Route[${urlSpec}]` : 'Router';
@@ -246,12 +247,13 @@ export class Route<Args> {
 
     subRoute<UrlSpec extends string, ChildArgs = Args & ParseUrlSpec<UrlSpec>>(
         urlSpec: UrlSpec,
-        makeContent: (args: FunctionsOf<ChildArgs>) => FragmentItem | Promise<FragmentItem>
+        makeContent: (args: FunctionsOf<ChildArgs>) => FragmentItem | Promise<FragmentItem>,
+        transient?: boolean
     ): Route<ChildArgs> {
         if (!urlSpec.startsWith('/')) {
             throw new Error('URL spec must start with /');
         }
-        const route = new Route<ChildArgs>(this, urlSpec, makeContent);
+        const route = new Route<ChildArgs>(this, urlSpec, makeContent, transient);
         this.subRoutes.push(route);
         return route;
     }
@@ -338,7 +340,7 @@ export class Route<Args> {
             for (const key in this.args) {
                 argFuncs[key] = () => this.args![key];
             }
-            this.component.appendLazyFragment(() => this.makeContent(argFuncs));
+            this.component.setLazyContent(() => this.makeContent(argFuncs), this.transient);
             this.contentAppended = true;
         }
 

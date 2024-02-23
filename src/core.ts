@@ -577,6 +577,11 @@ export class Component<N extends Node | null = Node | null> {
         return this;
     }
 
+    replaceFragment(fragment: FragmentItem): Component<N> {
+        this.replaceChildren(flattenFragment(fragment));
+        return this;
+    }
+
     appendChild(child: Component): Component<N> {
         return this.insertBefore(child);
     }
@@ -593,26 +598,35 @@ export class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    appendLazyFragment(fragmentFunc: (this: Component<N>) => FragmentItem | Promise<FragmentItem>): Component<N> {
+    setLazyContent(fragmentFunc: (this: Component<N>) => FragmentItem | Promise<FragmentItem>, transient?: boolean): Component<N> {
         const boundFragmentFunc = fragmentFunc.bind(this);
+        let counter = 0;
         let loaded = false;
-        this.addMountListener(function onMountLazy() {
+        this.addMountListener(function onMountLazyContent() {
             if (loaded) {
                 return;
             }
             loaded = true;
             const bodyResult = boundFragmentFunc();
             if (!(bodyResult instanceof Promise)) {
-                this.clear();
-                this.appendFragment(bodyResult);
+                this.replaceFragment(bodyResult);
                 return;
             }
+            const capturedCounter = ++counter;
             this.trackAsyncLoad(async function loadLazyBody() {
                 const loadedBody = await bodyResult;
-                this.clear(); // clear to support adding children that will be displayed while loading
-                this.appendFragment(loadedBody);
+                if (capturedCounter === counter) {
+                    this.replaceFragment(loadedBody);
+                }
             });
         });
+        if (transient) {
+            this.addUnmountListener(function onUnmountLazyContent() {
+                this.clear();
+                loaded = false;
+                ++counter;
+            });
+        }
         return this;
     }
 
@@ -1248,17 +1262,19 @@ export function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: Fragme
 }
 
 export function Immediate(...bodyFragment: FragmentItem[]) {
-    const component = new Component(null, 'Immediate');
-    component.setSuspenseHandler(function noopSuspenseHandler() { });
-    component.appendFragment(bodyFragment);
-    return component;
+    return new Component(null, 'Immediate')
+        .setSuspenseHandler(function noopSuspenseHandler() { })
+        .appendFragment(bodyFragment);
 }
 
 
 export function Lazy(bodyFunc: (this: Component<null>) => FragmentItem | Promise<FragmentItem>): Component<null> {
-    return new Component(null, 'Lazy').appendLazyFragment(bodyFunc);
+    return new Component(null, 'Lazy').setLazyContent(bodyFunc);
 }
 
+export function Transient(bodyFunc: (this: Component<null>) => FragmentItem | Promise<FragmentItem>): Component<null> {
+    return new Component(null, 'Transient').setLazyContent(bodyFunc, true);
+}
 
 export function Async(obj: Promise<FragmentItem> | AsyncGenerator<FragmentItem>): Component<null> {
     const component = new Component(null, 'Async');
