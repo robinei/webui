@@ -1,8 +1,8 @@
 import { errorDescription, asyncDelay } from '../util';
 import { Value, mapValue, FragmentItem,
-    HTML, With, If, Repeat, Immediate, ErrorBoundary, Lazy, Async, Loading } from '../core';
+    HTML, If, Repeat, Immediate, ErrorBoundary, Lazy, Async, Loading, Match, Else } from '../core';
 
-const { span, br, button, table, tr, td, input, pre, b } = HTML;
+const { span, br, button, table, tr, td, input, pre, b, p } = HTML;
 
 
 export function TestPage(): FragmentItem {
@@ -56,15 +56,17 @@ export function TestPage(): FragmentItem {
             Async(asyncDelay(500).then(() => 'Async text')),
             br(),
             
-            'Width: ', Slider(()=>width, 1, 20, v=>width=v), br(),
-            'Height: ', Slider(()=>height, 1, 20, v=>height=v), br(),
-            'Scale: ', Slider(()=>scale, 1, 10, v=>scale=v), br(),
+            'Width: ', Slider(()=>width, 1, 20, v=>width=v),
+            p(Match(()=>width,
+                [x=>(x%2)==0, 'Width (', ()=>width,') is ', 'even'],
+                [Else, 'Width (', ()=>width,') is ', 'odd'])),
+            'Height: ', Slider(()=>height, 1, 20, v=>height=v),
+            'Scale: ', Slider(()=>scale, 1, 10, v=>scale=v),
             table(
-                With(()=>scale, s =>
-                    Repeat(()=>height, y =>
-                        tr(
-                            Repeat(()=>width, x =>
-                                td(((x+1)*(y+1)*s).toString())))))),
+                Repeat(()=>height, y =>
+                    tr(
+                        Repeat(()=>width, x =>
+                            td(()=>((x+1)*(y+1)*scale).toString()))))),
         ];
 
         function Slider(value: Value<number>, min: number, max: number, onChange: (newValue: number) => void) {

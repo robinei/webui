@@ -299,10 +299,9 @@ export class Component<N extends Node | null = Node | null> {
             return self;
         }
 
-        const valueFunc = value;
         let lastVal: Result<T> | Nil = Nil;
         self.addUpdateListener(function checkIfValueChanged(): void {
-            const newVal = valueFunc();
+            const newVal = value();
             if (!forceValuePropagation && equalCheck && newVal === lastVal) {
                 return; // early check and return (do less in common case of no change)
             }
@@ -1052,26 +1051,54 @@ export function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: 
 }
 
 export function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> {
-    return With(condValue, function evalIf(cond) { return cond ? thenFragment : elseFragment; }, 'If');
+    let thenComponents: Component[] | undefined;
+    let elseComponents: Component[] | undefined;
+    return new Component(null, 'If').addValueWatcher(condValue, function evalIf(v) {
+        if (v) {
+            thenComponents ??= flattenFragment(thenFragment);
+            this.replaceChildren(thenComponents);
+        } else {
+            elseComponents ??= flattenFragment(elseFragment);
+            this.replaceChildren(elseComponents);
+        }
+    });
 }
 
 export function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> {
-    return With(condValue, function evalWhen(cond) { return cond ? bodyFragment : null; }, 'When');
+    let bodyComponents: Component[] | undefined;
+    return new Component(null, 'When').addValueWatcher(condValue, function evalWhen(v) {
+        if (v) {
+            bodyComponents ??= flattenFragment(bodyFragment);
+            this.appendChildren(bodyComponents);
+        } else {
+            this.clear();
+        }
+    });
 }
 
 export function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> {
-    return With(condValue, function evalUnless(cond) { return cond ? null : bodyFragment; }, 'Unless');
+    let bodyComponents: Component[] | undefined;
+    return new Component(null, 'Unless').addValueWatcher(condValue, function evalUnless(v) {
+        if (v) {
+            this.clear();
+        } else {
+            bodyComponents ??= flattenFragment(bodyFragment);
+            this.appendChildren(bodyComponents);
+        }
+    });
 }
 
-export function Match<T extends Primitive>(value: Value<T>, ...cases: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null> {
-    return With(value, function evalMatch(v: T) {
-        for (const [matcher, ...fragment] of cases) {
+export function Match<T extends Primitive>(value: Value<T>, ...alternatives: [T | ((v: T) => boolean), ...FragmentItem[]][]): Component<null> {
+    const componentLists = alternatives.map(alt => flattenFragment(alt.slice(1) as FragmentItem));
+    return new Component(null, 'Match').addValueWatcher(value, function evalMatch(v) {
+        for (let i = 0; i < alternatives.length; ++i) {
+            const matcher = alternatives[i]![0];
             if (typeof matcher === 'function' ? matcher(v) : v === matcher) {
-                return fragment;
+                this.replaceChildren(componentLists[i]!);
+                return;
             }
         }
-        return null;
-    }, 'Match');
+    });
 }
 export function Else(_: unknown): true {
     return true;
