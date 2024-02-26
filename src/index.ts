@@ -1,9 +1,10 @@
 import { Component, FragmentItem, HTML, Suspense } from './core';
 import { Router, Outlet } from './routing';
+import { TestObservable } from './observable';
 
 const { nav, main, button } = HTML;
 
-
+TestObservable();
 const router = new Router(RootPage);
 
 export const homeRoute = router.subRoute('/', DefaultPage);
