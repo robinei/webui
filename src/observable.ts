@@ -1,11 +1,14 @@
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
+const Loading: unique symbol = Symbol('Loading');
+type Loading = typeof Loading;
+
 let context: Calculated<unknown> | undefined;
 
-let currentBatch: Sink<unknown>[] | undefined;
+let currentBatch: Sink[] | undefined;
 
-function batch(func: () => void): void {
+export function batch(func: () => void): void {
     const shouldRunBatch = !currentBatch;
     if (!currentBatch) {
         currentBatch = [];
@@ -24,7 +27,7 @@ function batch(func: () => void): void {
     }
 }
 
-abstract class Observable<T> {
+export abstract class Observable<T> {
     abstract get(): T;
 
     private dependents?: Calculated<unknown>[];
@@ -51,13 +54,16 @@ abstract class Observable<T> {
     }
 }
 
-class Signal<T> extends Observable<T> {
-    constructor(private value: T) {
+export class Signal<T> extends Observable<T> {
+    constructor(private value: T | Loading = Loading) {
         super();
     }
 
     override get(): T {
         this.addContextAsDependent();
+        if (this.value === Loading) {
+            throw Loading;
+        }
         return this.value;
     }
 
@@ -70,14 +76,10 @@ class Signal<T> extends Observable<T> {
             this.invalidateDependents();
         }
     }
-
-    update(f: (v: T) => T): void {
-        this.set(f(this.value));
-    }
 }
 
-class Calculated<T> extends Observable<T> {
-    private value: T | Nil = Nil;
+export class Calculated<T> extends Observable<T> {
+    private value: T | Loading | Nil = Nil;
 
     constructor(private readonly func: () => T) {
         super();
@@ -85,16 +87,23 @@ class Calculated<T> extends Observable<T> {
 
     override get(): T {
         this.addContextAsDependent();
-        if (this.value != Nil) {
-            return this.value;
+        if (this.value === Nil) {
+            const prevContext = context;
+            context = this;
+            try {
+                this.value = this.func();
+            } catch (e) {
+                if (e === Loading) {
+                    this.value = Loading;
+                } else {
+                    throw e;
+                }
+            } finally {
+                context = prevContext;
+            }
         }
-
-        const prevContext = context;
-        context = this;
-        try {
-            this.value = this.func();
-        } finally {
-            context = prevContext;
+        if (this.value === Loading) {
+            throw Loading;
         }
         return this.value;
     }
@@ -107,8 +116,8 @@ class Calculated<T> extends Observable<T> {
     }
 }
 
-class Sink<T = void> extends Calculated<T> {
-    constructor(func: () => T, private active = true) {
+export class Sink extends Calculated<void> {
+    constructor(func: () => void, private active = true) {
         super(func);
         if (active) {
             this.get();
@@ -116,12 +125,24 @@ class Sink<T = void> extends Calculated<T> {
     }
 
     activate(): void {
-        this.active = true;
-        this.get();
+        if (!this.active) {
+            this.active = true;
+            this.get();
+        }
     }
 
     deactivate(): void {
         this.active = false;
+    }
+
+    override get(): void {
+        try {
+            super.get();
+        } catch (e) {
+            if (e !== Loading) {
+                throw e;
+            }
+        }
     }
 
     protected override addContextAsDependent(): void {}
@@ -136,15 +157,18 @@ class Sink<T = void> extends Calculated<T> {
 
 
 export function TestObservable() {
-    const a = new Signal(2);
+    const a = new Signal<number>();
     const b = new Signal(3);
     const sum = new Calculated(() => a.get() + b.get());
 
     const sink = new Sink(() => {
         console.log('sum', sum.get());
     });
+    b.set(2);
+    b.set(3);
 
     batch(() => {
+        a.set(10000);
         a.set(20);
         b.set(30);
     });
