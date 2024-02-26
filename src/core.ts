@@ -1,34 +1,19 @@
 import { calcLevenshteinOperations, WritableKeys, errorDescription, isPlainObject } from './util';
+import { Observable, Calculated, Effect } from './observable'
 
 
 // used as a private 'missing' placeholder that outside code can't create
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
-
-export type Value<T> = T | (() => Result<T>);
-type Result<T> = T | Loading;
 export const Loading: unique symbol = Symbol('Loading');
 export type Loading = typeof Loading;
 
-export function isStaticValue<T>(value: Value<T>): value is T {
-    return typeof value !== 'function';
-}
 
-export function mapValue<T, R>(value: Value<T>, mapper: (v: T) => R): Value<R> {
-    if (isStaticValue(value)) {
-        return mapper(value);
-    }
-    let lastInput: Result<T> | Nil = Nil;
-    let lastOutput: Result<R>;
-    return function valueMapper() {
-        const v = value();
-        if (v !== lastInput) {
-            lastInput = v;
-            lastOutput = v !== Loading ? mapper(v) : Loading;
-        }
-        return lastOutput;
-    };
+export type Value<T> = T | (() => T) | Observable<T>;
+
+export function isStaticValue<T>(value: Value<T>): value is T {
+    return typeof value !== 'function' && !(value instanceof Observable);
 }
 
 
@@ -228,14 +213,14 @@ export class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addMountListener(listener: (this: Component<N>) => void): Component<N> {
+    addMountListener(listener: (this: Component<N>) => void, invokeNow = false): Component<N> {
         const boundListener = listener.bind(this);
         if (this.mountListeners) {
             this.mountListeners.push(boundListener);
         } else {
             this.mountListeners = [boundListener];
         }
-        if (this.mounted) {
+        if (this.mounted && invokeNow) {
             try {
                 boundListener();
             } catch (e) {
@@ -245,14 +230,14 @@ export class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addMountedListener(listener: (this: Component<N>) => void): Component<N> {
+    addMountedListener(listener: (this: Component<N>) => void, invokeNow = false): Component<N> {
         const boundListener = listener.bind(this);
         if (this.mountedListeners) {
             this.mountedListeners.push(boundListener);
         } else {
             this.mountedListeners = [boundListener];
         }
-        if (this.mounted) {
+        if (this.mounted && invokeNow) {
             try {
                 boundListener();
             } catch (e) {
@@ -272,14 +257,14 @@ export class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addUpdateListener(listener: (this: Component<N>) => void | false): Component<N> {
+    addUpdateListener(listener: (this: Component<N>) => void | false, invokeNow = false): Component<N> {
         const boundListener = listener.bind(this);
         if (this.updateListeners) {
             this.updateListeners.push(boundListener);
         } else {
             this.updateListeners = [boundListener];
         }
-        if (this.mounted) {
+        if (this.mounted && invokeNow) {
             try {
                 boundListener();
             } catch (e) {
@@ -299,25 +284,30 @@ export class Component<N extends Node | null = Node | null> {
             return self;
         }
 
-        let lastVal: Result<T> | Nil = Nil;
-        self.addUpdateListener(function checkIfValueChanged(): void {
-            const newVal = value();
-            if (!forceValuePropagation && equalCheck && newVal === lastVal) {
-                return; // early check and return (do less in common case of no change)
-            }
-            if (newVal === Loading) {
-                if (lastVal !== Loading) {
-                    self.addSuspenseCount(1);
-                    lastVal = newVal;
-                }
-                return;
-            }
-            if (lastVal === Loading) {
-                self.addSuspenseCount(-1);
-            }
-            lastVal = newVal;
-            onValueChanged(newVal);
-        });
+        if (typeof value === 'function') {
+            value = new Calculated(value);
+        }
+        const observable: Observable<T> = value;
+        try {
+            onValueChanged(observable.get());
+        } catch (e) {
+            self.injectError(e);
+            return self;
+        }
+
+        if (observable.requiresPolling()) {
+            self.addUpdateListener(function onUpdateValueWatcher() {
+                onValueChanged(observable.get());
+            }, false);
+        } else {
+            const effect = new Effect(() => onValueChanged(observable.get()), false);
+            self.addMountListener(function onMountValueWatcher() {
+                effect.activate();
+            }, false);
+            self.addUnmountListener(function onUnmountValueWatcher() {
+                effect.deactivate();
+            });
+        }
 
         function onValueChanged(v: T): void {
             try {
@@ -959,7 +949,13 @@ function visitFragment(fragment: FragmentItem, text: string, handler: (component
         handler(DynamicText(fragment));
         return '';
     default:
-        if (fragment instanceof Component) {
+        if (fragment instanceof Observable) {
+            if (text) {
+                handler(StaticText(text));
+            }
+            handler(DynamicText(fragment));
+            return '';
+        } else if (fragment instanceof Component) {
             if (text) {
                 handler(StaticText(text));
             }

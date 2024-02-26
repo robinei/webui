@@ -1,33 +1,42 @@
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
-const Loading: unique symbol = Symbol('Loading');
-type Loading = typeof Loading;
+let context: Calculated<any> | undefined;
 
-let context: Calculated<unknown> | undefined;
+let currentBatch: Effect[] | undefined;
 
-let currentBatch: Sink[] | undefined;
-
-export function batch(func: () => void): void {
-    const shouldRunBatch = !currentBatch;
+export function batchEffects<T>(func: () => T): T {
+    const isBatchOwnedHere = !currentBatch;
     if (!currentBatch) {
         currentBatch = [];
     }
     try {
-        func();
-        if (shouldRunBatch) {
+        const result = func();
+        if (isBatchOwnedHere) {
             for (const entry of currentBatch) {
                 entry.get();
             }
         }
+        return result;
     } finally {
-        if (shouldRunBatch) {
+        if (isBatchOwnedHere) {
             currentBatch = undefined;
         }
     }
 }
 
+export function noEffects<T>(func: () => T): T {
+    const previousBatch = currentBatch;
+    currentBatch = []; // we will just discard these
+    try {
+        return func();
+    } finally {
+        currentBatch = previousBatch;
+    }
+}
+
 export abstract class Observable<T> {
+    abstract requiresPolling(): boolean;
     abstract get(): T;
 
     private dependents?: Calculated<unknown>[];
@@ -36,7 +45,7 @@ export abstract class Observable<T> {
         if (this.dependents?.length) {
             const entries = this.dependents;
             this.dependents = undefined;
-            batch(() => {
+            batchEffects(() => {
                 for (const entry of entries) {
                     entry.invalidate();
                 }
@@ -46,6 +55,7 @@ export abstract class Observable<T> {
 
     protected addContextAsDependent(): void {
         if (context) {
+            context.incrementDependecyCount();
             this.dependents ??= [];
             if (this.dependents.indexOf(context) < 0) {
                 this.dependents.push(context);
@@ -55,55 +65,62 @@ export abstract class Observable<T> {
 }
 
 export class Signal<T> extends Observable<T> {
-    constructor(private value: T | Loading = Loading) {
+    constructor(private value: T) {
         super();
+    }
+
+    override requiresPolling(): boolean {
+        return false;
     }
 
     override get(): T {
         this.addContextAsDependent();
-        if (this.value === Loading) {
-            throw Loading;
-        }
         return this.value;
     }
 
-    set(v: T): void {
-        if (context) {
-            throw new Error('signal modified in derived calculation');
-        }
+    set(v: T): T {
         if (v !== this.value) {
             this.value = v;
             this.invalidateDependents();
         }
+        return v;
+    }
+
+    update(f: (v: T) => T): T {
+        return this.value = f(this.value);
     }
 }
 
 export class Calculated<T> extends Observable<T> {
-    private value: T | Loading | Nil = Nil;
+    private value: T | Nil = Nil;
+    private lastValue?: T;
+    private dependencyCount = 0;
+    private polled = false;
 
-    constructor(private readonly func: () => T) {
+    constructor(private readonly func: (lastValue?: T) => T) {
         super();
+    }
+
+    override requiresPolling(): boolean {
+        return this.polled;
     }
 
     override get(): T {
         this.addContextAsDependent();
-        if (this.value === Nil) {
+        if (this.value === Nil || this.polled) {
             const prevContext = context;
             context = this;
             try {
-                this.value = this.func();
-            } catch (e) {
-                if (e === Loading) {
-                    this.value = Loading;
-                } else {
-                    throw e;
+                this.dependencyCount = 0;
+                this.polled = false;
+                this.lastValue = this.value = this.func(this.lastValue);
+                this.polled ||= this.dependencyCount === 0;
+                if (this.polled && prevContext) {
+                    prevContext.polled = true;
                 }
             } finally {
                 context = prevContext;
             }
-        }
-        if (this.value === Loading) {
-            throw Loading;
         }
         return this.value;
     }
@@ -114,41 +131,35 @@ export class Calculated<T> extends Observable<T> {
             this.invalidateDependents();
         }
     }
+
+    incrementDependecyCount(): void {
+        ++this.dependencyCount;
+    }
 }
 
-export class Sink extends Calculated<void> {
-    constructor(func: () => void, private active = true) {
+export class Effect extends Calculated<void> {
+    constructor(func: () => void, private isActive = true) {
         super(func);
-        if (active) {
+        if (isActive) {
             this.get();
         }
     }
 
     activate(): void {
-        if (!this.active) {
-            this.active = true;
+        if (!this.isActive) {
+            this.isActive = true;
             this.get();
         }
     }
 
     deactivate(): void {
-        this.active = false;
-    }
-
-    override get(): void {
-        try {
-            super.get();
-        } catch (e) {
-            if (e !== Loading) {
-                throw e;
-            }
-        }
+        this.isActive = false;
     }
 
     protected override addContextAsDependent(): void {}
 
     protected override invalidateDependents(): void {
-        if (this.active && currentBatch && currentBatch.indexOf(this) < 0) {
+        if (this.isActive && currentBatch && currentBatch.indexOf(this) < 0) {
             // push ourself into the current batch, so we are recaculated at the end of it
             currentBatch.push(this);
         }
@@ -157,23 +168,21 @@ export class Sink extends Calculated<void> {
 
 
 export function TestObservable() {
-    const a = new Signal<number>();
+    const a = new Signal(2);
     const b = new Signal(3);
     const sum = new Calculated(() => a.get() + b.get());
 
-    const sink = new Sink(() => {
+    const effect = new Effect(() => {
         console.log('sum', sum.get());
     });
-    b.set(2);
-    b.set(3);
 
-    batch(() => {
+    batchEffects(() => {
         a.set(10000);
         a.set(20);
         b.set(30);
     });
     a.set(21);
-    sink.deactivate();
+    effect.deactivate();
     a.set(22);
 }
 

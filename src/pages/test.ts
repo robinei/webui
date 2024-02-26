@@ -1,6 +1,7 @@
 import { errorDescription, asyncDelay } from '../util';
-import { Value, mapValue, FragmentItem,
-    HTML, If, Repeat, Immediate, ErrorBoundary, Lazy, Async, Loading, Match, Else } from '../core';
+import { Observable, Signal } from '../observable'
+import { FragmentItem,
+    HTML, If, Repeat, Immediate, ErrorBoundary, Lazy, Async, Match, Else, Component, Loading } from '../core';
 
 const { span, br, button, table, tr, td, input, pre, b, p } = HTML;
 
@@ -12,13 +13,9 @@ export function TestPage(): FragmentItem {
         const [cb3, checked3] = CheckBox();
         const [cb4, checked4] = CheckBox();
 
-        let width = 15;
-        let height: number | Loading = Loading;
-        let scale = 1;
-        asyncDelay(800).then(() => {
-            height = 10;
-            this.update();
-        });
+        let width = new Signal(15);
+        let height = new Signal(10);
+        let scale = new Signal(1);
 
         return [
             cb1, cb2, cb3, cb4,
@@ -56,34 +53,40 @@ export function TestPage(): FragmentItem {
             Async(asyncDelay(500).then(() => 'Async text')),
             br(),
             
-            'Width: ', Slider(()=>width, 1, 20, v=>width=v),
-            p(Match(()=>width,
-                [x=>(x%2)==0, 'Width (', ()=>width,') is ', 'even'],
-                [Else, 'Width (', ()=>width,') is ', 'odd'])),
-            'Height: ', Slider(()=>height, 1, 20, v=>height=v),
-            'Scale: ', Slider(()=>scale, 1, 10, v=>scale=v),
+            'Width: ', Slider(width, 1, 20),
+            p(Match(width,
+                [x=>(x%2)==0, 'Width (', width,') is ', 'even'],
+                [Else, 'Width (', width,') is ', 'odd'])),
+            'Height: ', Slider(height, 1, 20),
+            'Scale: ', Slider(scale, 1, 10),
             table(
-                Repeat(()=>height, y =>
+                Repeat(height, y =>
                     tr(
-                        Repeat(()=>width, x =>
-                            td(()=>((x+1)*(y+1)*scale).toString()))))),
+                        Repeat(width, x =>
+                            td(()=>((x+1)*(y+1)*scale.get()).toString()))))),
         ];
 
-        function Slider(value: Value<number>, min: number, max: number, onChange: (newValue: number) => void) {
+        function Slider(value: Signal<number>, min: number, max: number) {
             return input({
                 type: 'range',
                 min: min.toString(),
                 max: max.toString(),
-                value: mapValue(value, v => v.toString()),
+                value: () => value.get().toString(),
                 oninput(ev) {
-                    onChange((ev.target as any).value);
+                    value.set((ev.target as any).value);
                 }
             });
         }
 
-        function CheckBox() {
-            const cb = input({ type: 'checkbox', onchange()  { /* empty event handler still triggers update */ } });
-            return [cb, () => cb.node.checked] as const;
+        function CheckBox(): [Component<HTMLInputElement>, Observable<boolean>] {
+            const signal = new Signal(false);
+            const cb = input({
+                type: 'checkbox',
+                onchange()  {
+                    signal.set(cb.node.checked);
+                },
+            });
+            return [cb, signal];
         }
     });
 }
