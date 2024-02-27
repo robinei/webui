@@ -1,31 +1,27 @@
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
-let context: Calculated<any> | undefined;
+let context: Observable<unknown> | undefined;
 
-let currentBatch: Effect[] | undefined;
+let currentBatch: Observable<unknown>[] | undefined;
 
 export function batchEffects<T>(func: () => T): T {
-    const isBatchOwnedHere = !currentBatch;
-    if (!currentBatch) {
-        currentBatch = [];
+    if (currentBatch) {
+        return func(); // already an active batch
     }
+    currentBatch = [];
     try {
         const result = func();
-        if (isBatchOwnedHere) {
-            for (const entry of currentBatch) {
-                entry.get();
-            }
+        for (const entry of currentBatch) {
+            entry.get(); // trigger recomputation of entire batch
         }
         return result;
     } finally {
-        if (isBatchOwnedHere) {
-            currentBatch = undefined;
-        }
+        currentBatch = undefined;
     }
 }
 
-export function noEffects<T>(func: () => T): T {
+export function suppressEffects<T>(func: () => T): T {
     const previousBatch = currentBatch;
     currentBatch = []; // we will just discard these
     try {
@@ -36,112 +32,140 @@ export function noEffects<T>(func: () => T): T {
 }
 
 export abstract class Observable<T> {
-    abstract requiresPolling(): boolean;
+    private dependents?: Observable<unknown>[];
+
     abstract get(): T;
 
-    private dependents?: Calculated<unknown>[];
+    requiresPolling(): boolean { return false; }
 
-    protected invalidateDependents(): void {
+    protected invalidate(): void {
         if (this.dependents?.length) {
             const entries = this.dependents;
             this.dependents = undefined;
             batchEffects(() => {
-                for (const entry of entries) {
+                for (let entry of entries) {
                     entry.invalidate();
                 }
             });
         }
     }
 
-    protected addContextAsDependent(): void {
+    protected addContextAsDependent(lastValue: T): void {
         if (context) {
-            context.incrementDependecyCount();
+            context.addDependency(this, lastValue);
             this.dependents ??= [];
             if (this.dependents.indexOf(context) < 0) {
                 this.dependents.push(context);
             }
         }
     }
+
+    protected addDependency(observable: Observable<unknown>, lastValue: unknown): void {}
 }
 
 export class Signal<T> extends Observable<T> {
-    constructor(private value: T) {
+    constructor(private value: T, private readonly options?: {
+        readonly equals?: false | ((prev: T, next: T) => boolean)
+    }) {
         super();
     }
 
-    override requiresPolling(): boolean {
-        return false;
-    }
-
     override get(): T {
-        this.addContextAsDependent();
+        this.addContextAsDependent(this.value);
         return this.value;
     }
 
     set(v: T): T {
-        if (v !== this.value) {
+        if (this.options?.equals == false || (this.options?.equals ? !this.options.equals(this.value, v) : this.value !== v)) {
             this.value = v;
-            this.invalidateDependents();
+            this.invalidate();
         }
         return v;
     }
 
-    update(f: (v: T) => T): T {
-        return this.value = f(this.value);
+    modify(f: (v: T) => T): T {
+        return this.set(f(this.value));
     }
 }
 
-export class Calculated<T> extends Observable<T> {
+interface Dependecy {
+    lastValue: unknown;
+    observable: Observable<unknown>;
+}
+
+export class Computed<T> extends Observable<T> {
     private value: T | Nil = Nil;
     private lastValue?: T;
-    private dependencyCount = 0;
-    private polled = false;
+    private dependencies: Dependecy[] = [];
+    private polled: boolean;
 
-    constructor(private readonly func: (lastValue?: T) => T) {
+    constructor(private readonly func: (lastValue?: T) => T, private readonly options?: {
+        readonly polled?: boolean,
+        readonly equals?: false | ((prev: unknown, next: unknown) => boolean)
+    }) {
         super();
+        this.polled = !!options?.polled;
+    }
+
+    protected override addDependency(observable: Observable<unknown>, lastValue: unknown): void {
+        if (observable.requiresPolling()) {
+            this.polled = true; // if we depend on a polled observable, we must ourselves require polling
+        }
+        for (const entry of this.dependencies) {
+            if (entry.observable === observable) {
+                return; // already added
+            }
+        }
+        this.dependencies.push({ lastValue, observable });
+    }
+
+    private shouldRecompute(): boolean {
+        if (this.polled || this.options?.equals == false) {
+            return true;
+        }
+        const equals = this.options?.equals ?? ((prev, next) => prev === next);
+        for (const entry of this.dependencies) {
+            if (!equals(entry.lastValue, entry.observable.get())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    override get(): T {
+        if (this.value === Nil || this.shouldRecompute()) {
+            const previousContext = context;
+            context = this;
+            try {
+                this.dependencies = [];
+                this.polled = !!this.options?.polled;
+                this.lastValue = this.value = this.func(this.lastValue);
+                this.polled ||= this.dependencies.length === 0; // assume a 0-dependency Computed needs to be polled (it can't be invalidated)
+            } finally {
+                context = previousContext;
+            }
+        }
+        this.addContextAsDependent(this.value);
+        return this.value;
     }
 
     override requiresPolling(): boolean {
         return this.polled;
     }
 
-    override get(): T {
-        this.addContextAsDependent();
-        if (this.value === Nil || this.polled) {
-            const prevContext = context;
-            context = this;
-            try {
-                this.dependencyCount = 0;
-                this.polled = false;
-                this.lastValue = this.value = this.func(this.lastValue);
-                this.polled ||= this.dependencyCount === 0;
-                if (this.polled && prevContext) {
-                    prevContext.polled = true;
-                }
-            } finally {
-                context = prevContext;
-            }
-        }
-        return this.value;
-    }
-
-    invalidate(): void {
+    protected override invalidate(): void {
         if (this.value !== Nil) {
             this.value = Nil;
-            this.invalidateDependents();
+            super.invalidate(); // invalidate dependents
         }
-    }
-
-    incrementDependecyCount(): void {
-        ++this.dependencyCount;
     }
 }
 
-export class Effect extends Calculated<void> {
-    constructor(func: () => void, private isActive = true) {
+export class Effect<T> extends Computed<T> {
+    constructor(func: (lastValue?: T) => T, private isActive = true) {
         super(func);
         if (isActive) {
-            this.get();
+            this.get(); 
         }
     }
 
@@ -156,12 +180,10 @@ export class Effect extends Calculated<void> {
         this.isActive = false;
     }
 
-    protected override addContextAsDependent(): void {}
-
-    protected override invalidateDependents(): void {
+    protected override invalidate(): void {
+        super.invalidate();
         if (this.isActive && currentBatch && currentBatch.indexOf(this) < 0) {
-            // push ourself into the current batch, so we are recaculated at the end of it
-            currentBatch.push(this);
+            currentBatch.push(this); // push ourself into the current batch, so we are re-computed at the end of it
         }
     }
 }
@@ -170,7 +192,10 @@ export class Effect extends Calculated<void> {
 export function TestObservable() {
     const a = new Signal(2);
     const b = new Signal(3);
-    const sum = new Calculated(() => a.get() + b.get());
+    const sum = new Computed(() => {
+        console.log('recompute');
+        return a.get() + b.get();
+    });
 
     const effect = new Effect(() => {
         console.log('sum', sum.get());

@@ -1,5 +1,5 @@
 import { calcLevenshteinOperations, WritableKeys, errorDescription, isPlainObject } from './util';
-import { Observable, Calculated, Effect } from './observable'
+import { Observable, Computed, Effect } from './observable'
 
 
 // used as a private 'missing' placeholder that outside code can't create
@@ -285,10 +285,11 @@ export class Component<N extends Node | null = Node | null> {
         }
 
         if (typeof value === 'function') {
-            value = new Calculated(value);
+            value = new Computed(value);
         }
         const observable: Observable<T> = value;
         try {
+            // we must run the observable first in order to discover if it requires polling
             onValueChanged(observable.get());
         } catch (e) {
             self.injectError(e);
