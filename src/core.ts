@@ -301,7 +301,7 @@ export class Component<N extends Node | null = Node | null> {
                 onValueChanged(observable.get());
             }, false);
         } else {
-            const effect = new Effect(() => onValueChanged(observable.get()), false);
+            const effect = new Effect(() => onValueChanged(observable.get()), { active: false });
             self.addMountListener(function onMountValueWatcher() {
                 effect.activate();
             }, false);

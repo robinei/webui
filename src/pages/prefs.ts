@@ -4,17 +4,17 @@ import { prefsRoute, editPrefRoute } from '..';
 
 
 interface Preference {
-    name: string;
-    value: string;
+    readonly name: string;
+    readonly value: string;
 }
 
-const preferences: Preference[] = [
+let preferences: Preference[] = [
     { name: 'username', value: 'guest' },
     { name: 'password', value: 'guest' },
 ];
 
-function findPref(name: string) {
-    for (const pref of preferences) {
+function findPref(prefs: Preference[], name: string) {
+    for (const pref of prefs) {
         if (pref.name === name) {
             return pref;
         }
@@ -22,16 +22,15 @@ function findPref(name: string) {
     return null;
 }
 
-function getPreference(name: string) {
-    return findPref(name)?.value ?? '';
+function getPreference(prefs: Preference[], name: string) {
+    return findPref(prefs, name)?.value ?? '';
 }
 
-function setPreference(name: string, value: string) {
-    const pref = findPref(name);
-    if (pref) {
-        pref.value = value;
+function setPreference(prefs: Preference[], name: string, value: string): Preference[] {
+    if (findPref(prefs, name)) {
+        return prefs.map(p => p.name !== name ? p : { ...p, value });
     } else {
-        preferences.push({ name, value });
+        return [...prefs, { name, value }];
     }
 }
 
@@ -62,9 +61,9 @@ export function PreferencesListPage(): FragmentItem {
 
 export function EditPreferencePage({name}: { name(): string }): FragmentItem {
     const textInput = input({
-        value: () => getPreference(name()),
+        value: () => getPreference(preferences, name()),
         oninput() {
-            setPreference(name(), textInput.node.value);
+            preferences = setPreference(preferences, name(), textInput.node.value);
         },
         onkeydown(ev) {
             if (ev.key === 'Enter') {
@@ -81,5 +80,13 @@ export function EditPreferencePage({name}: { name(): string }): FragmentItem {
         br(),
         textInput,
         prefsRoute.Link({}, 'done'),
-    );
+        br(),
+        editPrefRoute.Link({name: 'password'}, 'password'),
+        br(),
+        editPrefRoute.Link({name: 'username'}, 'username'),
+    ).addMountListener(() => {
+        console.log("MOUNT");
+    }).addUnmountListener(() => {
+        console.log("UNMOUNT");
+    });
 }
