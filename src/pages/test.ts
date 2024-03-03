@@ -1,7 +1,7 @@
 import { errorDescription, asyncDelay } from '../util';
 import { Observable, Signal } from '../observable'
 import { FragmentItem,
-    HTML, If, Repeat, Immediate, ErrorBoundary, Lazy, Async, Match, Else, Component, Loading } from '../core';
+    HTML, If, Repeat, Immediate, ErrorBoundary, Lazy, Async, Match, Else, Component } from '../core';
 
 const { span, br, button, table, tr, td, input, pre, b, p } = HTML;
 

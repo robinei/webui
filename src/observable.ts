@@ -5,6 +5,7 @@ let currentContext: Observable<unknown> | undefined;
 
 let currentBatch: Set<Observable<unknown>> | undefined;
 
+
 export function batchEffects<T>(func: () => T): T {
     if (currentBatch) {
         return func(); // already an active batch
@@ -21,15 +22,17 @@ export function batchEffects<T>(func: () => T): T {
     }
 }
 
+
 export function suppressEffects<T>(func: () => T): T {
     const previousBatch = currentBatch;
-    currentBatch = new Set<Observable<unknown>>(); // we will just discard these
+    currentBatch = undefined;
     try {
         return func();
     } finally {
         currentBatch = previousBatch;
     }
 }
+
 
 export function suppressTracking<T>(func: () => T): T {
     const previousContext = currentContext;
@@ -41,10 +44,12 @@ export function suppressTracking<T>(func: () => T): T {
     }
 }
 
+
 export interface ObservableOptions {
     activated?(): void;
     deactivated?(): void;
 }
+
 export abstract class Observable<T> {
     private dependents?: Set<Observable<unknown>>;
 
@@ -55,12 +60,11 @@ export abstract class Observable<T> {
     protected constructor(protected readonly observableOptions: ObservableOptions | undefined) {}
 
     protected invalidate(): void {
-        if (this.dependents?.size !== 0) {
-            batchEffects(() => {
-                if (this.dependents) {
-                    for (let entry of this.dependents) {
-                        entry.invalidate();
-                    }
+        const dependents = this.dependents;
+        if (dependents?.size) {
+            batchEffects(function invalidateDependents() {
+                for (let entry of dependents) {
+                    entry.invalidate();
                 }
             });
         }
@@ -101,9 +105,23 @@ export abstract class Observable<T> {
     }
 }
 
+
+export class Constant<T> extends Observable<T> {
+    constructor(private readonly value: T, options?: ObservableOptions) {
+        super(options);
+    }
+
+    override get(): T {
+        this.addContextAsDependent(this.value);
+        return this.value;
+    }
+}
+
+
 export interface SignalOptions<T> extends ObservableOptions {
     readonly equals?: false | ((a: T, b: T) => boolean);
 }
+
 export class Signal<T> extends Observable<T> {
     private readonly equalsFunc: (a: T, b: T) => boolean;
 
@@ -130,6 +148,7 @@ export class Signal<T> extends Observable<T> {
     }
 }
 
+
 class DelegatedSignal<T> extends Signal<T> {
     constructor(private readonly observable: Observable<T>, private readonly modifyFunc: (f: (v: T) => T) => T) {
         super(undefined as any);
@@ -148,10 +167,12 @@ class DelegatedSignal<T> extends Signal<T> {
     }
 }
 
+
 export interface ComputedOptions extends ObservableOptions {
     readonly polled?: boolean;
     readonly equals?: false | ((prev: unknown, next: unknown) => boolean);
 }
+
 export class Computed<T> extends Observable<T> {
     private readonly dependencies = new Map<Observable<unknown>, unknown>();
     private isPolled: boolean;
@@ -221,11 +242,13 @@ export class Computed<T> extends Observable<T> {
     }
 }
 
-export interface EffectOptions extends ObservableOptions {
+
+export interface EffectOptions extends ComputedOptions {
     active?: boolean;
 }
+
 export class Effect<T> extends Computed<T> {
-    private isActive = false;
+    private active = false;
 
     constructor(func: (lastValue?: T) => T, options?: EffectOptions) {
         super(func, options);
@@ -234,70 +257,78 @@ export class Effect<T> extends Computed<T> {
         }
     }
 
+    isActive(): boolean {
+        return this.active;
+    }
+
     activate(): void {
-        if (!this.isActive) {
-            this.isActive = true;
+        if (!this.active) {
+            this.active = true;
             this.get();
             this.observableOptions?.activated?.();
         }
     }
 
     deactivate(): void {
-        if (this.isActive) {
-            this.isActive = false;
+        if (this.active) {
+            this.active = false;
             this.removeFromDependencies();
             this.observableOptions?.deactivated?.();
         }
     }
 
     protected override invalidate(): void {
-        if (this.isActive) {
+        if (this.active) {
             currentBatch?.add(this); // add ourself into the current batch, so we are re-computed at the end of it
         }
         super.invalidate();
     }
 
-    protected override addContextAsDependent(lastValue: T): void {
-        if (currentContext) {
-            throw new Error('effects cannot have dependents');
-        }
-    }
+    protected override addContextAsDependent(lastValue: T): void {}
 
-    protected override removeDependent(dependent: Observable<unknown>): void {
-        throw new Error('effects cannot have dependents');
-    }
+    protected override removeDependent(dependent: Observable<unknown>): void {}
 }
 
 
-export type ObservableProxy<T> = T extends object ? Observable<T> & {
+const observableProxySymbol = Symbol("isProxy")
+
+export type ObservableProxy<T> = (T extends object ? Observable<T> & {
     readonly [K in keyof T as K extends string|number ? (T[K] extends Function ? never : K) : never]-?: ObservableProxy<T[K]>;
-} : Observable<T>;
+} : Observable<T>) & { _proxyBrand: string };
 
 export function observableProxy<T extends object>(object: Observable<T>): ObservableProxy<T> {
     const cache: { [key: string | symbol]: unknown } = {};
     return new Proxy(object, {
         get(_, key) {
+            if (key === observableProxySymbol) {
+                return true;
+            }
             if (typeof key === 'string') {
                 switch (key) {
                     case 'get': return object.get.bind(object);
                     case 'requiresPolling': return object.requiresPolling.bind(object);
                 }
-                return cache[key] ??= observableProxy(new Computed(() => (object.get() as any)[key]));
+                return cache[key] ??= observableProxy(new Computed(function getProxyChild() {
+                    return (object.get() as any)[key];
+                }));
             }
-            throw new Error('expected string key');
+            throw new Error('unexpected key: ' + String(key));
         }
     }) as ObservableProxy<T>;
 }
 
 
-export type SignalProxy<T> = T extends object ? Signal<T> & {
+export type SignalProxy<T> = (T extends object ? Signal<T> & {
     readonly [K in keyof T as K extends string|number ? (T[K] extends Function ? never : K) : never]-?: SignalProxy<T[K]>;
-} : Signal<T>;
+} : Signal<T>) & { _proxyBrand: string };
 
 export function signalProxy<T extends object>(object: Signal<T>): SignalProxy<T> {
     const cache: { [key: string | symbol]: unknown } = {};
     return new Proxy(object, {
         get(_, key) {
+            if (key === observableProxySymbol) {
+                return true;
+            }
             if (typeof key === 'string') {
                 switch (key) {
                     case 'get': return object.get.bind(object);
@@ -305,10 +336,18 @@ export function signalProxy<T extends object>(object: Signal<T>): SignalProxy<T>
                     case 'set': return object.set.bind(object);
                     case 'modify': return object.modify.bind(object);
                 }
-                return cache[key] ??= signalProxy(new DelegatedSignal(new Computed(() => (object.get() as any)[key]),
-                    f => object.modify((obj: any) => setValueForKey(obj, key, f(obj[key])))));
+                return cache[key] ??= signalProxy(new DelegatedSignal(
+                    new Computed(function getProxyChild() {
+                        return (object.get() as any)[key];
+                    }),
+                    function modifyProxyChild(f) {
+                        return object.modify(function modifyProxy(obj: any) {
+                            return setValueForKey(obj, key, f(obj[key]));
+                        });
+                    }
+                ));
             }
-            throw new Error('expected string key');
+            throw new Error('unexpected key: ' + String(key));
         },
     }) as SignalProxy<T>;
 }
@@ -327,6 +366,10 @@ function setValueForKey<T extends object>(obj: T, key: string, value: unknown): 
     return { ...obj, [key]: value };
 }
 
+
+export function isObservableProxy<T>(value: T | (() => T) | Observable<T> | ObservableProxy<T>): value is ObservableProxy<T> {
+    return value && typeof value === 'object' && (value as any)[observableProxySymbol] === true;
+}
 
 
 
@@ -520,6 +563,14 @@ function TestObservable() {
         console.assert(proxy.foo.x instanceof Observable);
         console.assert(proxy.foo.x instanceof Signal);
         console.assert(proxy.foo.x instanceof DelegatedSignal);
+    }
+
+    {
+        const sig = signalProxy(new Signal({x: 1}));
+        const obs: ObservableProxy<{x: number}> = sig;
+        console.assert(isObservableProxy(sig));
+        console.assert(isObservableProxy(obs));
+        console.assert(!isObservableProxy(new Signal(1)));
     }
 }
 

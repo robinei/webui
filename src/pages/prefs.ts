@@ -1,6 +1,7 @@
-import { FragmentItem, HTML, For } from '../core';
+import { FragmentItem, HTML, For, Component } from '../core';
 import { Outlet } from '../routing';
 import { prefsRoute, editPrefRoute } from '..';
+import { Computed, Signal, signalProxy } from '../observable';
 
 
 interface Preference {
@@ -8,10 +9,10 @@ interface Preference {
     readonly value: string;
 }
 
-let preferences: Preference[] = [
+const preferences = signalProxy(new Signal<Preference[]>([
     { name: 'username', value: 'guest' },
     { name: 'password', value: 'guest' },
-];
+]));
 
 function findPref(prefs: Preference[], name: string) {
     for (const pref of prefs) {
@@ -34,6 +35,7 @@ function setPreference(prefs: Preference[], name: string, value: string): Prefer
     }
 }
 
+
 const { div, hr, br, ul, li, input } = HTML;
 
 export function PreferencesPage(): FragmentItem {
@@ -47,23 +49,24 @@ export function PreferencesPage(): FragmentItem {
 
 export function PreferencesListPage(): FragmentItem {
     return ul(
-        For(() => preferences, pref =>
-            li(
+        For(preferences, function renderPrefListEntry(pref) {
+            return li(
                 pref.name,
                 ': ',
-                () => pref.value,
+                pref.value,
                 ' ',
-                editPrefRoute.Link({name: pref.name}, 'edit'),
-            )
-        )
+                editPrefRoute.Link({name: pref.name.get()}, 'edit'),
+            );
+        })
     );
 }
 
 export function EditPreferencePage({name}: { name(): string }): FragmentItem {
+    const nameObservable = new Computed(name);
     const textInput = input({
-        value: () => getPreference(preferences, name()),
+        value: () => getPreference(preferences.get(), nameObservable.get()),
         oninput() {
-            preferences = setPreference(preferences, name(), textInput.node.value);
+            preferences.modify(prefs => setPreference(prefs, nameObservable.get(), textInput.node.value));
         },
         onkeydown(ev) {
             if (ev.key === 'Enter') {
