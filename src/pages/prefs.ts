@@ -48,6 +48,9 @@ export function PreferencesPage(): FragmentItem {
 }
 
 export function PreferencesListPage(): FragmentItem {
+    setInterval(() => {
+        preferences[0].name.modify(name => name + '#');
+    }, 1000);
     return ul(
         For(preferences, function renderPrefListEntry(pref) {
             return li(

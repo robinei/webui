@@ -175,18 +175,18 @@ export interface ComputedOptions extends ObservableOptions {
 
 export class Computed<T> extends Observable<T> {
     private readonly dependencies = new Map<Observable<unknown>, unknown>();
-    private isPolled: boolean;
+    private polled: boolean;
     private value: T | Nil = Nil;
     private lastValue: T | Nil = Nil;
 
     constructor(private readonly func: (lastValue?: T) => T, private readonly options?: ComputedOptions) {
         super(options);
-        this.isPolled = !!options?.polled;
+        this.polled = !!options?.polled;
     }
 
     protected override addDependency(observable: Observable<unknown>, lastValue: unknown): void {
         if (observable.requiresPolling()) {
-            this.isPolled = true; // if we depend on a polled observable, we must ourselves require polling
+            this.polled = true; // if we depend on a polled observable, we must ourselves require polling
         }
         this.dependencies.set(observable, lastValue);
     }
@@ -210,17 +210,17 @@ export class Computed<T> extends Observable<T> {
     }
 
     override get(): T {
-        if (this.value === Nil || this.isPolled) {
+        if (this.value === Nil || this.polled) {
             const previousContext = currentContext;
             currentContext = this;
             try {
-                if (this.lastValue !== Nil && !this.isPolled && !this.areDependenciesChanged()) {
+                if (this.lastValue !== Nil && !this.polled && !this.areDependenciesChanged()) {
                     this.value = this.lastValue;
                 } else {
                     this.dependencies.clear();
-                    this.isPolled = !!this.options?.polled;
+                    this.polled = !!this.options?.polled;
                     this.lastValue = this.value = this.func(this.lastValue === Nil ? undefined : this.lastValue);
-                    this.isPolled ||= this.dependencies.size === 0; // assume a 0-dependency Computed needs to be polled (it can't be invalidated)
+                    this.polled ||= this.dependencies.size === 0; // assume a 0-dependency Computed needs to be polled (it can't be invalidated)
                 }
             } finally {
                 currentContext = previousContext;
@@ -231,11 +231,12 @@ export class Computed<T> extends Observable<T> {
     }
 
     override requiresPolling(): boolean {
-        return this.isPolled;
+        return this.polled;
     }
 
     protected override invalidate(): void {
-        if (this.value !== Nil) {
+        console.assert(!currentContext, 'invalidation happened during computed get');
+        if (this.value !== Nil && this.areDependenciesChanged()) {
             this.value = Nil;
             super.invalidate(); // invalidate dependents
         }

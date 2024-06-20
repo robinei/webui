@@ -1106,11 +1106,11 @@ export function For<T extends object>(itemsValue: Value<T[]>, renderFunc: (item:
 
     function areChildrenEqual(c: Component | undefined, items: T[]): boolean {
         for (const item of items) {
-            let result = fragmentMap.get(keyOf(item));
-            if (!result) {
+            let fragment = fragmentMap.get(keyOf(item));
+            if (!fragment) {
                 return false;
             }
-            for (const child of result[1]) {
+            for (const child of fragment) {
                 if (child !== c) {
                     return false;
                 }
@@ -1118,6 +1118,17 @@ export function For<T extends object>(itemsValue: Value<T[]>, renderFunc: (item:
             }
         }
         return c === null;
+    }
+
+    function findIndex(items: T[], key: unknown): number {
+        let index = indexMap.get(key);
+        if (index !== undefined) {
+            return index;
+        }
+        for (let i = 0; i < items.length; ++i) {
+            indexMap.set(keyOf(items[i]), i);
+        }
+        return indexMap.get(key) ?? -1;
     }
 
     return new Component(null, 'For').addValueWatcher(itemsObservable, function onForItemsChanged(items) {
@@ -1128,18 +1139,20 @@ export function For<T extends object>(itemsValue: Value<T[]>, renderFunc: (item:
         const newFragmentMap = new Map<unknown, Component[]>();
         const children: Component[] = [];
         for (let i = 0; i < items.length; ++i) {
-            const item = items[i];
-            const key = keyOf(item);
+            const key = keyOf(items[i]);
             indexMap.set(key, i);
             const fragment = fragmentMap.get(key) ?? flattenFragment(renderFunc(observableProxy(
-                new Computed(function getFragmentByKey() {
-                    const index = indexMap.get(key);
-                    console.log('key', key);
-                    console.log('index', index);
-                    if (index === undefined) {
-                        throw new Error('unknown index: ' + String(index));
+                new Computed(function getItemByKey(prevResult) {
+                    const items = itemsObservable.get();
+                    const index = findIndex(items, key);
+                    if (index < 0) {
+                        if (prevResult !== undefined) {
+                            return prevResult; // this item is going away
+                        }
+                        console.error('index not known for key:', key);
+                        throw new Error('index not known');
                     }
-                    return itemsObservable.get()[index];
+                    return items[index];
                 })
             )));
             newFragmentMap.set(key, fragment);

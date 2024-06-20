@@ -48,7 +48,7 @@ function parseUrlSpec(spec: string): UrlMatcher {
 
     if (spec.startsWith('/')) {
         const parseRest = parseUrlSpec(spec.substring(1));
-        return (url, args) => {
+        return function parseSlash(url, args) {
             if (url.startsWith('/')) {
                 return parseRest(url.substring(1), args);
             }
@@ -71,7 +71,7 @@ function parseUrlSpec(spec: string): UrlMatcher {
             }
             queryParsers[key] = createValueParser(type, true);
         }
-        return (url, args) => {
+        return function parseQuery(url, args) {
             if (url.indexOf('/') >= 0) {
                 return false;
             }
@@ -114,7 +114,7 @@ function parseUrlSpec(spec: string): UrlMatcher {
 
     if (splitFrag.length === 1) {
         // no ':' in fragment; match verbatim
-        return (url, args) => {
+        return function parsePathComponent(url, args) {
             if (url.startsWith(fragment)) {
                 return parseRest(url.substring(fragment.length), args);
             }
@@ -134,7 +134,7 @@ function parseUrlSpec(spec: string): UrlMatcher {
 
     const parser = createValueParser(type);
 
-    return (url, args) => {
+    return function parseValue(url, args) {
         const i = url.indexOf('/');
         const prefix = url.substring(0, i < 0 ? url.length : i);
         const value = parser(prefix);
@@ -148,17 +148,17 @@ function parseUrlSpec(spec: string): UrlMatcher {
 
 function createValueParser(type: string, allowEmpty: boolean = false): (s: string) => unknown {
     switch (type) {
-        case 'string': return function valueParser(s) {
+        case 'string': return function parseString(s) {
             return !allowEmpty && !s ? null : s;
         };
-        case 'number': return function valueParser(s) {
+        case 'number': return function parseNumber(s) {
             if (!allowEmpty && !s) {
                 return null;
             }
             const num = Number(s);
             return isNaN(num) ? null : num;
         };
-        case 'boolean': return function valueParser(s) {
+        case 'boolean': return function parseBoolean(s) {
             switch (s.toLowerCase()) {
                 case '0':
                 case 'no':
@@ -336,11 +336,12 @@ export class Route<Args> {
             if (!this.args) {
                 throw new Error('args not yet parsed');
             }
+            const self = this;
             const argFuncs: any = {};
             for (const key in this.args) {
                 argFuncs[key] = () => this.args![key];
             }
-            this.component.setLazyContent(() => this.makeContent(argFuncs), this.transient);
+            this.component.setLazyContent(function makeRouteContent() { return self.makeContent(argFuncs); }, this.transient);
             this.contentAppended = true;
         }
 
@@ -372,7 +373,7 @@ const RouterContext = new Context<Router>('RouterContext');
 
 export class Router extends Route<{}> {
     constructor(makeContent?: () => FragmentItem) {
-        super(null, '', makeContent ?? (() => Outlet()));
+        super(null, '', makeContent ?? Outlet);
         this.component.addMountListener(() => window.addEventListener('popstate', this.tryMatchLocation));
         this.component.addUnmountListener(() => window.removeEventListener('popstate', this.tryMatchLocation));
         this.component.provideContext(RouterContext, this);
