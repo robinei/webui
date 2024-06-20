@@ -1,26 +1,14 @@
 import { calcLevenshteinOperations, WritableKeys, errorDescription, isPlainObject } from './util';
-import { Observable, Computed, Effect, ObservableProxy, Constant, observableProxy } from './observable'
 
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
 
-export type Value<T> = T | (() => T) | Observable<T> | ObservableProxy<T>;
+export type Value<T> = T | (() => T);
 
 export function isStaticValue<T>(value: Value<T>): value is T {
-    return typeof value !== 'function' && !(value instanceof Observable);
+    return typeof value !== 'function';
 }
-
-export function toObservable<T>(value: Value<T>): Observable<T> {
-    if (isStaticValue(value)) {
-        return new Constant(value);
-    }
-    if (typeof value === 'function') {
-        return new Computed(value);
-    }
-    return value;
-}
-
 
 export type Primitive = null | undefined | string | number | boolean;
 export type FragmentItem = Value<Primitive> | Component | FragmentItem[];
@@ -200,20 +188,20 @@ export class Component<N extends Node | null = Node | null> {
         }
     }
 
-    addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: Component<N>, ev: GlobalEventHandlersEventMap[K]) => any): Component<N> {
+    addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: Component<N>, ev: GlobalEventHandlersEventMap[K]) => void): Component<N> {
         const self = this;
         if (!self.node) {
             throw new Error('addEventListener called on node-less component');
         }
         const boundListener = listener.bind(self);
-        self.node.addEventListener(type, function listenerInvoker(ev: any): void {
+        self.node.addEventListener(type, function listenerInvoker(ev): void {
             try {
-                boundListener(ev);
+                boundListener(ev as GlobalEventHandlersEventMap[K]);
             } catch (e) {
                 self.injectError(e);
                 return;
             }
-            self.updateRoot();
+            self.updateRoot(); // update the tree after event listeners run (they may change state we depend on)
         });
         return this;
     }
@@ -279,45 +267,27 @@ export class Component<N extends Node | null = Node | null> {
         return this;
     }
 
-    addManagedEffect(handler: (this: Component<N>) => void): Component<N> {
-        const effect = new Effect(handler.bind(this), { active: false });
-        let addedUpdateListener = false;
-        this.addMountListener(function onMountEffect() {
-            effect.activate();
-            if (effect.requiresPolling() && !addedUpdateListener) {
-                addedUpdateListener = true;
-                this.addUpdateListener(function onUpdateEffect() {
-                    if (effect.isActive()) {
-                        effect.get();
-                    }
-                });
-            }
-        });
-        return this.addUnmountListener(function onUmountEffect() {
-            effect.deactivate();
-        });
-    }
-
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck: boolean = true): Component<N> {
         const self = this;
         const boundWatcher = watcher.bind(self);
         let lastEmittedValue: T | Nil = Nil;
 
-        const observable = toObservable(value);
-        
-        if (observable instanceof Constant) { // no need to observe
-            valueWatcherEffectHandler();
-            return self;
+        if (isStaticValue(value)) {
+            onNewValue(value);
+            return this;
         }
 
-        return self.addManagedEffect(valueWatcherEffectHandler);
+        this.addUpdateListener(function onValueWatcherUpdate() {
+            const newValue = value();
+            onNewValue(newValue);
+        }, true);
+        return this;
 
-        function valueWatcherEffectHandler(): void {
+        function onNewValue(newValue: T): void {
             try {
-                const v = observable.get();
-                if (forceValuePropagation || !equalCheck || lastEmittedValue !== v) {
-                    lastEmittedValue = v;
-                    boundWatcher(v);
+                if (forceValuePropagation || !equalCheck || lastEmittedValue !== newValue) {
+                    lastEmittedValue = newValue;
+                    boundWatcher(newValue);
                 }
             } catch (e) {
                 self.injectError(e);
@@ -344,7 +314,7 @@ export class Component<N extends Node | null = Node | null> {
                     this.addUnmountListener(value);
                     break;
                 default:
-                    this.addEventListener(name.substring(2) as any, value as any);
+                    this.addEventListener(name.substring(2) as any, value);
                     break;
                 }
             } else if (name === 'style') {
@@ -540,13 +510,13 @@ export class Component<N extends Node | null = Node | null> {
 
     appendChildren(children: Component[]): Component<N> {
         for (const child of children) {
-            this.appendChild(child);
+            this.insertBefore(child);
         }
         return this;
     }
 
     appendFragment(fragment: FragmentItem): Component<N> {
-        iterateFragment(fragment, this.appendChild.bind(this));
+        iterateFragment(fragment, this.insertBefore.bind(this));
         return this;
     }
 
@@ -951,13 +921,7 @@ function visitFragment(fragment: FragmentItem, text: string, handler: (component
         handler(DynamicText(fragment));
         return '';
     default:
-        if (fragment instanceof Observable) {
-            if (text) {
-                handler(StaticText(text));
-            }
-            handler(DynamicText(fragment));
-            return '';
-        } else if (fragment instanceof Component) {
+        if (fragment instanceof Component) {
             if (text) {
                 handler(StaticText(text));
             }
@@ -999,19 +963,19 @@ export const HTML = new Proxy({}, {
             if (arguments.length > 0) {
                 let text = '';
 
-                const appendChild = component.appendChild.bind(component);
+                const insertBefore = component.insertBefore.bind(component);
                 for (let i = 0; i < arguments.length; ++i) {
                     const arg = arguments[i];
                     if (isPlainObject(arg)) {
                         component.setAttributes(arg);
                     } else {
-                        text = visitFragment(arg, text, appendChild);
+                        text = visitFragment(arg, text, insertBefore);
                     }
                 }
 
                 if (text) {
                     if (component.hasChildren()) {
-                        component.appendChild(StaticText(text));
+                        component.insertBefore(StaticText(text));
                     } else {
                         // only set textContent if there were no other children
                         component.node.textContent = text;
@@ -1098,19 +1062,18 @@ export function Else(_: unknown): true {
     return true;
 }
 
-export function For<T extends object>(itemsValue: Value<T[]>, renderFunc: (item: ObservableProxy<T>) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> {
-    const itemsObservable = toObservable(itemsValue);
+export function For<T extends object>(itemsValue: Value<ReadonlyArray<T>>, renderFunc: (getItem: () => T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> {
     const keyOf = keyFunc ?? (item => item);
+    const itemsByKey = new Map<unknown, T>();
     let fragmentMap = new Map<unknown, Component[]>();
-    const indexMap = new Map<unknown, number>();
 
     function areChildrenEqual(c: Component | undefined, items: T[]): boolean {
         for (const item of items) {
-            let result = fragmentMap.get(keyOf(item));
-            if (!result) {
+            let fragment = fragmentMap.get(keyOf(item));
+            if (!fragment) {
                 return false;
             }
-            for (const child of result[1]) {
+            for (const child of fragment) {
                 if (child !== c) {
                     return false;
                 }
@@ -1120,28 +1083,23 @@ export function For<T extends object>(itemsValue: Value<T[]>, renderFunc: (item:
         return c === null;
     }
 
-    return new Component(null, 'For').addValueWatcher(itemsObservable, function onForItemsChanged(items) {
+    return new Component(null, 'For').addValueWatcher(itemsValue, function onForItemsChanged(items) {
         if (areChildrenEqual(this.getFirstChild(), items)) {
             return;
         }
-        indexMap.clear();
+        itemsByKey.clear();
         const newFragmentMap = new Map<unknown, Component[]>();
         const children: Component[] = [];
         for (let i = 0; i < items.length; ++i) {
-            const item = items[i];
-            const key = keyOf(item);
-            indexMap.set(key, i);
-            const fragment = fragmentMap.get(key) ?? flattenFragment(renderFunc(observableProxy(
-                new Computed(function getFragmentByKey() {
-                    const index = indexMap.get(key);
-                    console.log('key', key);
-                    console.log('index', index);
-                    if (index === undefined) {
-                        throw new Error('unknown index: ' + String(index));
-                    }
-                    return itemsObservable.get()[index];
-                })
-            )));
+            const key = keyOf(items[i]);
+            itemsByKey.set(key, items[i]);
+            const fragment = fragmentMap.get(key) ?? flattenFragment(renderFunc(() => {
+                const item = itemsByKey.get(key);
+                if (item === undefined) {
+                    throw new Error('missing item in itemsByKey');
+                }
+                return item;
+            }));
             newFragmentMap.set(key, fragment);
             for (const child of fragment) {
                 children.push(child);
@@ -1149,7 +1107,7 @@ export function For<T extends object>(itemsValue: Value<T[]>, renderFunc: (item:
         }
         fragmentMap = newFragmentMap;
         this.replaceChildren(children);
-    });
+    }, false);
 }
 
 export function Repeat(countValue: Value<number>, itemFunc: (i: number) => FragmentItem): Component<null> {
@@ -1190,7 +1148,7 @@ export function ErrorBoundary(
             const msg = `Error in ErrorBoundary fallback: ${(errorDescription(e))}`;
             console.error(msg);
             component.clear();
-            component.appendChild(StaticText(msg));
+            component.insertBefore(StaticText(msg));
         }
         return true;
     }

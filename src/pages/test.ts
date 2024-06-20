@@ -1,5 +1,4 @@
 import { errorDescription, asyncDelay } from '../util';
-import { Observable, Signal } from '../observable'
 import { FragmentItem,
     HTML, If, Repeat, Immediate, ErrorBoundary, Lazy, Async, Match, Else, Component } from '../core';
 
@@ -13,9 +12,9 @@ export function TestPage(): FragmentItem {
         const [cb3, checked3] = CheckBox();
         const [cb4, checked4] = CheckBox();
 
-        let width = new Signal(15);
-        let height = new Signal(10);
-        let scale = new Signal(1);
+        let width = 15;
+        let height = 10;
+        let scale = 1;
 
         return [
             cb1, cb2, cb3, cb4,
@@ -53,40 +52,37 @@ export function TestPage(): FragmentItem {
             Async(asyncDelay(500).then(() => 'Async text')),
             br(),
             
-            'Width: ', Slider(width, 1, 20),
-            p(Match(width,
-                [x=>(x%2)==0, 'Width (', width,') is ', 'even'],
-                [Else, 'Width (', width,') is ', 'odd'])),
-            'Height: ', Slider(height, 1, 20),
-            'Scale: ', Slider(scale, 1, 10),
+            'Width: ', Slider(() => width, 1, 20, v => width = v),
+            p(Match(() => width,
+                [x=>(x%2)==0, 'Width (', () => width,') is ', 'even'],
+                [Else, 'Width (', () => width,') is ', 'odd'])),
+            'Height: ', Slider(() => height, 1, 20, v => height = v),
+            'Scale: ', Slider(() => scale, 1, 10, v => scale = v),
             table(
-                Repeat(height, y =>
+                Repeat(() => height, y =>
                     tr(
-                        Repeat(width, x =>
-                            td(()=>((x+1)*(y+1)*scale.get()).toString()))))),
+                        Repeat(() => width, x =>
+                            td(()=>((x+1)*(y+1)*scale)))))),
         ];
 
-        function Slider(value: Signal<number>, min: number, max: number) {
+        function Slider(value: () => number, min: number, max: number, setValue: (newValue: number) => void) {
             return input({
                 type: 'range',
                 min: min.toString(),
                 max: max.toString(),
-                value: () => value.get().toString(),
+                value: () => value().toString(),
                 oninput(ev) {
-                    value.set((ev.target as any).value);
+                    setValue((ev.target as any).value);
                 }
             });
         }
 
-        function CheckBox(): [Component<HTMLInputElement>, Observable<boolean>] {
-            const signal = new Signal(false);
+        function CheckBox(): [Component<HTMLInputElement>, () => boolean] {
             const cb = input({
                 type: 'checkbox',
-                onchange()  {
-                    signal.set(cb.node.checked);
-                },
+                onchange()  {},
             });
-            return [cb, signal];
+            return [cb, () => cb.node.checked];
         }
     });
 }

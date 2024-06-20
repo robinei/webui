@@ -1,124 +1,26 @@
 import { FragmentItem, HTML, If, Match, For, Lazy, When } from '../core';
 
-interface TodoItemModel {
-    title: string;
-    done: boolean;
-}
-
-class TodoListModel {
-    private readonly items: TodoItemModel[] = [];
-
-    private editing?: TodoItemModel;
-
-    startEditing(item: TodoItemModel) {
-        this.editing = item;
-    }
-
-    finishEditing(item: TodoItemModel) {
-        if (this.editing === item) {
-            this.editing = undefined;
-        }
-    }
-
-    isEditing(item: TodoItemModel) {
-        return this.editing === item;
-    }
-
-    addItem(title: string) {
-        this.items.push({
-            title,
-            done: false,
-        });
-        return this;
-    }
-
-    removeItem(item: TodoItemModel) {
-        const i = this.items.indexOf(item);
-        if (i >= 0) {
-            this.items.splice(i, 1);
-        }
-        return this;
-    }
-
-    setAllDone = () => {
-        for (const item of this.items) {
-            item.done = true;
-        }
-        return this;
-    };
-
-    setNoneDone = () => {
-        for (const item of this.items) {
-            item.done = false;
-        }
-        return this;
-    };
-
-    getItems = () => {
-        return this.items;
-    };
-
-    getPendingItems = () => {
-        return this.items.filter(item => !item.done);
-    };
-
-    getDoneItems = () => {
-        return this.items.filter(item => item.done);
-    };
-
-    hasItems = () => {
-        return this.items.length > 0;
-    };
-
-    isEmpty = () => {
-        return this.items.length === 0;
-    };
-
-    isAllDone = () => {
-        for (const item of this.items) {
-            if (!item.done) {
-                return false;
-            }
-        }
-        return true;
-    };
-
-    isNothingDone = () => {
-        for (const item of this.items) {
-            if (item.done) {
-                return false;
-            }
-        }
-        return true;
-    };
-
-    hasDoneItems = () => {
-        for (const item of this.items) {
-            if (item.done) {
-                return true;
-            }
-        }
-        return false;
-    };
-}
-
-
-
-
 const { div, input, button, span, h4 } = HTML;
 
-function TodoItemView(item: TodoItemModel, list: TodoListModel) {
+
+interface TodoItemProps {
+    getTitle(): string;
+    setTitle(title: string): void;
+    isDone(): boolean;
+    setDone(done: boolean): void;
+    isNotEditing(): boolean;
+    startEditing(): void;
+    removeItem(): void;
+}
+
+function TodoItemView(props: TodoItemProps) {
     const checkbox = input({
         type: 'checkbox',
-        checked: () => item.done,
+        checked: props.isDone,
         onchange(ev) {
-            item.done = checkbox.node.checked;
+            props.setDone(checkbox.node.checked);
         },
     });
-
-    const isNotEditing = () => !list.isEditing(item);
-    const startEditing = () => list.startEditing(item);
-    const removeItem = () => list.removeItem(item);
 
     return div(
         {
@@ -128,16 +30,16 @@ function TodoItemView(item: TodoItemModel, list: TodoListModel) {
             }
         },
         checkbox,
-        If(isNotEditing,
+        If(props.isNotEditing,
             [
-                span(() => item.title, {
+                span(props.getTitle, {
                     style: {
                         flexGrow: '1'
                     },
-                    onclick: startEditing
+                    onclick: props.startEditing
                 }),
                 button('✎', {
-                    onclick: startEditing
+                    onclick: props.startEditing
                 }),
             ],
             Lazy(() => {
@@ -147,9 +49,9 @@ function TodoItemView(item: TodoItemModel, list: TodoListModel) {
                         paddingTop: '5px',
                         paddingBottom: '5px',
                     },
-                    value: () => item.title,
+                    value: props.getTitle,
                     oninput(ev) {
-                        item.title = (ev.target as any).value;
+                        props.setTitle((ev.target as any).value);
                     },
                     onkeydown(ev) {
                         if (ev.key === 'Enter') {
@@ -162,13 +64,6 @@ function TodoItemView(item: TodoItemModel, list: TodoListModel) {
                     onblur: finishEditing
                 });
 
-                function finishEditing() {
-                    list.finishEditing(item);
-                    if (!item.title) {
-                        removeItem();
-                    }
-                }
-
                 return [
                     editField,
                     button('✓', {
@@ -178,12 +73,31 @@ function TodoItemView(item: TodoItemModel, list: TodoListModel) {
             }),
         ),
         button('❌', {
-            onclick: removeItem
+            onclick: props.removeItem
         }),
     );
+
+    function finishEditing() {
+        finishEditing();
+        if (!props.getTitle()) {
+            props.removeItem();
+        }
+    }
 }
 
-function TodoListView(list: TodoListModel) {
+
+interface TodoListProps {
+    getTodoItems(): ReadonlyArray<TodoItem>;
+    getDoneItems(): ReadonlyArray<TodoItem>;
+    addItem(title: string): void;
+    areAllTodo(): boolean;
+    areAllDone(): boolean;
+    areAnyDone(): boolean;
+    setAllTodo(): void;
+    setAllDone(): void;
+}
+
+function TodoListView(props: TodoListProps) {
     const textInput = input({
         style: {
             flexGrow: '1'
@@ -203,7 +117,7 @@ function TodoListView(list: TodoListModel) {
 
     function onAddText() {
         if (textInput.node.value) {
-            list.addItem(textInput.node.value);
+            props.addItem(textInput.node.value);
             textInput.node.value = '';
         }
     }
@@ -233,14 +147,15 @@ function TodoListView(list: TodoListModel) {
                 }
             }),
             button('All done!', {
-                disabled: list.isAllDone,
-                onclick: list.setAllDone,
+                disabled: props.areAllDone,
+                onclick: props.setAllDone,
             }),
-            For(list.getPendingItems, item =>
-                TodoItemView(item, list))
+            For(props.getTodoItems, getItem => {
+                
+            }, item => item.id)
         ),
 
-        When(list.hasDoneItems, div(
+        When(props.areAnyDone, div(
             h4('Done:', {
                 style: {
                     marginTop: '20px',
@@ -248,16 +163,95 @@ function TodoListView(list: TodoListModel) {
                 }
             }),
             button('Unmark all', {
-                disabled: list.isNothingDone,
-                onclick: list.setNoneDone,
+                disabled: props.areAllTodo,
+                onclick: props.setAllTodo,
             }),
-            For(list.getDoneItems, item =>
-                TodoItemView(item, list))
+            For(props.getDoneItems, TodoItemView)
         )),
     );
 }
 
+
+
+
+interface TodoItem {
+    readonly id: string;
+    readonly title: string;
+}
+
+interface TodoList {
+    readonly todo: TodoItem[];
+    readonly done: TodoItem[];
+    readonly idCounter: number;
+    readonly editing: string | null;
+}
+
+function emptyTodoList(): TodoList {
+    return {
+        todo: [],
+        done: [],
+        idCounter: 0,
+        editing: null,
+    }
+}
+
+function setEditing(list: TodoList, itemId: string | null): TodoList {
+    return { ...list,
+        editing: itemId
+    };
+}
+
+function addItem(list: TodoList, title: string): TodoList {
+    return { ...list,
+        todo: [...list.todo, { id: list.idCounter.toString(), title, }],
+        idCounter: list.idCounter + 1
+    };
+}
+
+function removeItem(list: TodoList, itemId: string): TodoList {
+    return { ...list,
+        todo: list.todo.filter(item => item.id != itemId),
+        done: list.done.filter(item => item.id != itemId),
+    };
+}
+
+function modifyItem(list: TodoList, itemId: string, func: (item: TodoItem) => TodoItem): TodoList {
+    return { ...list,
+        todo: list.todo.map(item => item.id !== itemId ? item : func(item)),
+        done: list.done.map(item => item.id !== itemId ? item : func(item)),
+    };
+}
+
+function setAllDone(list: TodoList): TodoList {
+    return { ...list,
+        todo: [],
+        done: [...list.todo, ...list.done],
+    };
+}
+
+function setAllTodo(list: TodoList): TodoList {
+    return { ...list,
+        todo: [...list.todo, ...list.done],
+        done: [],
+    };
+}
+
+
 export function TodoPage(): FragmentItem {
-    const model = new TodoListModel().addItem('Bake bread').addItem('Clean dishes').addItem('Take out trash').addItem('Buy groceries');
-    return TodoListView(model);
+    let list: TodoList = emptyTodoList();
+    list = addItem(list, 'Bake bread');
+    list = addItem(list, 'Clean dishes');
+    list = addItem(list, 'Take out trash');
+    list = addItem(list, 'Buy groceries');
+
+    return TodoListView({
+        getTodoItems() { return list.todo; },
+        getDoneItems() { return list.done; },
+        addItem(title) { list = addItem(list, title); },
+        areAllTodo() { return list.done.length === 0; },
+        areAllDone() { return list.todo.length === 0; },
+        areAnyDone() { return list.done.length > 0; },
+        setAllTodo() { list = setAllTodo(list); },
+        setAllDone() { list = setAllDone(list); },
+    });
 }

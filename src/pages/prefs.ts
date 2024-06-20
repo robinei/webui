@@ -1,7 +1,6 @@
 import { FragmentItem, HTML, For, Component } from '../core';
 import { Outlet } from '../routing';
 import { prefsRoute, editPrefRoute } from '..';
-import { Computed, Signal, signalProxy } from '../observable';
 
 
 interface Preference {
@@ -9,12 +8,12 @@ interface Preference {
     readonly value: string;
 }
 
-const preferences = signalProxy(new Signal<Preference[]>([
+let preferences: ReadonlyArray<Preference> = [
     { name: 'username', value: 'guest' },
     { name: 'password', value: 'guest' },
-]));
+];
 
-function findPref(prefs: Preference[], name: string) {
+function findPref(prefs: ReadonlyArray<Preference>, name: string) {
     for (const pref of prefs) {
         if (pref.name === name) {
             return pref;
@@ -23,11 +22,11 @@ function findPref(prefs: Preference[], name: string) {
     return null;
 }
 
-function getPreference(prefs: Preference[], name: string) {
+function getPreference(prefs: ReadonlyArray<Preference>, name: string) {
     return findPref(prefs, name)?.value ?? '';
 }
 
-function setPreference(prefs: Preference[], name: string, value: string): Preference[] {
+function setPreference(prefs: ReadonlyArray<Preference>, name: string, value: string): Preference[] {
     if (findPref(prefs, name)) {
         return prefs.map(p => p.name !== name ? p : { ...p, value });
     } else {
@@ -51,22 +50,21 @@ export function PreferencesListPage(): FragmentItem {
     return ul(
         For(preferences, function renderPrefListEntry(pref) {
             return li(
-                pref.name,
+                () => pref().name,
                 ': ',
-                pref.value,
+                () => pref().value,
                 ' ',
-                editPrefRoute.Link({name: pref.name.get()}, 'edit'),
+                editPrefRoute.Link({name: pref().name}, 'edit'),
             );
         })
     );
 }
 
 export function EditPreferencePage({name}: { name(): string }): FragmentItem {
-    const nameObservable = new Computed(name);
     const textInput = input({
-        value: () => getPreference(preferences.get(), nameObservable.get()),
+        value: () => getPreference(preferences, name()),
         oninput() {
-            preferences.modify(prefs => setPreference(prefs, nameObservable.get(), textInput.node.value));
+            preferences = setPreference(preferences, name(), textInput.node.value);
         },
         onkeydown(ev) {
             if (ev.key === 'Enter') {
@@ -88,8 +86,8 @@ export function EditPreferencePage({name}: { name(): string }): FragmentItem {
         br(),
         editPrefRoute.Link({name: 'username'}, 'username'),
     ).addMountListener(() => {
-        console.log("MOUNT");
+        console.log('MOUNT');
     }).addUnmountListener(() => {
-        console.log("UNMOUNT");
+        console.log('UNMOUNT');
     });
 }
