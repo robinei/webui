@@ -1,4 +1,4 @@
-import { FragmentItem, HTML, If, For, Lazy, When, memoFilter } from '../core';
+import { Store, FragmentItem, HTML, If, For, Lazy, When } from '../core';
 
 const { div, input, button, span, h4 } = HTML;
 
@@ -10,27 +10,52 @@ interface TodoItem {
 }
 
 
+class TodoStore extends Store {
+    idCounter = 0;
+    items: TodoItem[] = [];
+    editing: string | null = null;
+
+    get todoItems() { return this.items.filter(i => !i.done); }
+    get doneItems() { return this.items.filter(i => i.done); }
+
+    addItem(title: string) {
+        this.items.push({ id: (this.idCounter++).toString(), title, done: false });
+    }
+
+    removeItem(item: TodoItem) {
+        const i = this.items.indexOf(item);
+        if (i >= 0) this.items.splice(i, 1);
+    }
+
+    toggleItem(item: TodoItem) {
+        item.done = !item.done;
+    }
+
+    setItemTitle(item: TodoItem, title: string) {
+        item.title = title;
+    }
+
+    setEditing(id: string | null) {
+        this.editing = id;
+    }
+
+    markAllDone() {
+        this.items.forEach(i => i.done = true);
+    }
+
+    unmarkAll() {
+        this.items.forEach(i => i.done = false);
+    }
+}
+
+
 export function TodoPage(): FragmentItem {
-    let idCounter = 0;
-    const items: TodoItem[] = [];
-    let editing: string | null = null;
+    const store = TodoStore.create();
 
-    function addItem(title: string) {
-        items.push({ id: (idCounter++).toString(), title, done: false });
-    }
-
-    function removeItem(item: TodoItem) {
-        const i = items.indexOf(item);
-        if (i >= 0) items.splice(i, 1);
-    }
-
-    addItem('Bake bread');
-    addItem('Clean dishes');
-    addItem('Take out trash');
-    addItem('Buy groceries');
-
-    const todoItems = memoFilter(items, i => !i.done);
-    const doneItems = memoFilter(items, i => i.done);
+    store.addItem('Bake bread');
+    store.addItem('Clean dishes');
+    store.addItem('Take out trash');
+    store.addItem('Buy groceries');
 
     function TodoItemView(getItem: () => TodoItem): FragmentItem {
         const item = getItem();
@@ -38,21 +63,21 @@ export function TodoPage(): FragmentItem {
             type: 'checkbox',
             checked: () => item.done,
             onchange() {
-                item.done = checkbox.node.checked;
+                store.toggleItem(item);
             },
         });
 
         return div(
             { style: { display: 'flex', alignItems: 'center' } },
             checkbox,
-            If(() => editing !== item.id,
+            If(() => store.editing !== item.id,
                 [
                     span(() => item.title, {
                         style: { flexGrow: '1' },
-                        onclick() { editing = item.id; }
+                        onclick() { store.setEditing(item.id); }
                     }),
                     button('✎', {
-                        onclick() { editing = item.id; }
+                        onclick() { store.setEditing(item.id); }
                     }),
                 ],
                 Lazy(() => {
@@ -64,7 +89,7 @@ export function TodoPage(): FragmentItem {
                         },
                         value: () => item.title,
                         oninput(ev) {
-                            item.title = (ev.target as any).value;
+                            store.setItemTitle(item, (ev.target as any).value);
                         },
                         onkeydown(ev) {
                             if (ev.key === 'Enter') {
@@ -86,14 +111,14 @@ export function TodoPage(): FragmentItem {
                 }),
             ),
             button('❌', {
-                onclick() { removeItem(item); }
+                onclick() { store.removeItem(item); }
             }),
         );
 
         function finishEditing() {
-            editing = null;
+            store.setEditing(null);
             if (!item.title) {
-                removeItem(item);
+                store.removeItem(item);
             }
         }
     }
@@ -113,7 +138,7 @@ export function TodoPage(): FragmentItem {
 
     function onAddText() {
         if (textInput.node.value) {
-            addItem(textInput.node.value);
+            store.addItem(textInput.node.value);
             textInput.node.value = '';
         }
     }
@@ -134,21 +159,21 @@ export function TodoPage(): FragmentItem {
                 style: { marginTop: '20px', marginBottom: '5px' },
             }),
             button('All done!', {
-                disabled: () => todoItems().length === 0,
-                onclick() { items.forEach(i => i.done = true); },
+                disabled: () => store.todoItems.length === 0,
+                onclick() { store.markAllDone(); },
             }),
-            For(todoItems, TodoItemView, item => item.id),
+            For(() => store.todoItems, TodoItemView, item => item.id),
         ),
 
-        When(() => doneItems().length > 0, div(
+        When(() => store.doneItems.length > 0, div(
             h4('Done:', {
                 style: { marginTop: '20px', marginBottom: '5px' },
             }),
             button('Unmark all', {
-                disabled: () => doneItems().length === 0,
-                onclick() { items.forEach(i => i.done = false); },
+                disabled: () => store.doneItems.length === 0,
+                onclick() { store.unmarkAll(); },
             }),
-            For(doneItems, TodoItemView, item => item.id),
+            For(() => store.doneItems, TodoItemView, item => item.id),
         )),
     );
 }

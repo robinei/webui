@@ -30,6 +30,7 @@ async function build() {
         chunkManifest = newManifest;
         return true;
     }
+    //console.log(result.metafile);
 
     // Map each output to its primary input file
     for (const [outputPath, outputInfo] of Object.entries(result.metafile.outputs)) {
@@ -63,6 +64,7 @@ async function build() {
     }
 
     chunkManifest = newManifest;
+    console.log(newManifest);
     return true;
 
     return true;

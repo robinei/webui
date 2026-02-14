@@ -18,7 +18,7 @@ export function fields<T extends object>(source: () => T): { readonly [K in keyo
     });
 }
 
-export function memoFilter<T>(source: Value<T[]>, predicate: (item: T) => boolean): () => T[] {
+export function memoFilter<T>(source: Value<ReadonlyArray<T>>, predicate: (item: T) => boolean): () => T[] {
     const getItems = isStaticValue(source) ? () => source : source;
     let cached: T[] = [];
     return () => {
@@ -27,13 +27,13 @@ export function memoFilter<T>(source: Value<T[]>, predicate: (item: T) => boolea
         for (let i = 0; i < items.length; ++i) {
             if (!predicate(items[i])) continue;
             if (ci >= cached.length || cached[ci] !== items[i]) {
-                cached = items.filter(predicate);
+                cached = Array.from(items).filter(predicate);
                 return cached;
             }
             ci++;
         }
         if (ci !== cached.length) {
-            cached = items.filter(predicate);
+            cached = Array.from(items).filter(predicate);
             return cached;
         }
         return cached;
@@ -101,6 +101,15 @@ export class Context<T> {
 
 
 let forceValuePropagation = false;
+
+let mountedRootComponent: Component | null = null;
+let suppressingUpdates = false;
+
+function triggerAppUpdate() {
+    if (!suppressingUpdates) {
+        mountedRootComponent?.updateRoot();
+    }
+}
 
 export class Component<out N extends Node | null = Node | null> {
     private parent?: Component;
@@ -226,13 +235,16 @@ export class Component<out N extends Node | null = Node | null> {
         }
         const boundListener = listener.bind(self);
         self.node.addEventListener(type, function listenerInvoker(ev): void {
+            suppressingUpdates = true;
             try {
                 boundListener(ev as GlobalEventHandlersEventMap[K]);
             } catch (e) {
                 self.injectError(e);
+                suppressingUpdates = false;
                 return;
             }
-            self.updateRoot(); // update the tree after event listeners run (they may change state we depend on)
+            suppressingUpdates = false;
+            self.updateRoot();
         });
         return this;
     }
@@ -620,6 +632,7 @@ export class Component<out N extends Node | null = Node | null> {
     mount(): Component<N> {
         const pendingMountedCalls = this.doMount();
         this.signalMounted(pendingMountedCalls);
+        mountedRootComponent = this;
         return this;
     }
     
@@ -897,7 +910,7 @@ export class Component<out N extends Node | null = Node | null> {
         }
     }
     
-    private updateRoot(): void {
+    updateRoot(): void {
         if (!this.mounted) {
             return;
         }
@@ -1440,5 +1453,116 @@ export function VirtualList<T extends object>(opts: VirtualListOptions<T>): Comp
         }
         prevVisible = visibleKeys;
         visibleKeys = newVisible;
+    }
+}
+
+
+// Store system
+
+export type DeepReadonly<T> =
+    T extends Function ? T :
+    T extends (infer U)[] ? readonly DeepReadonly<U>[] :
+    T extends Map<infer K, infer V> ? ReadonlyMap<DeepReadonly<K>, DeepReadonly<V>> :
+    T extends Set<infer U> ? ReadonlySet<DeepReadonly<U>> :
+    T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } :
+    T;
+
+export type StoreView<T extends Store> = {
+    readonly [K in keyof T as K extends keyof Store ? never : K]:
+        T[K] extends (...args: infer A) => infer R ? (...args: A) => R :
+        DeepReadonly<T[K]>
+} & {
+    derived<R>(selector: (self: StoreView<T>) => R): () => R;
+    provide(component: Component): StoreView<T>;
+};
+
+export class Store {
+    private _generation = 0;
+    private _dispatching = false;
+
+    private static _contexts = new WeakMap<Function, Context<any>>();
+
+    private static _getContext(ctor: Function): Context<any> {
+        let ctx = Store._contexts.get(ctor);
+        if (!ctx) {
+            ctx = new Context(ctor.name || 'Store');
+            Store._contexts.set(ctor, ctx);
+        }
+        return ctx;
+    }
+
+    constructor() {
+        const storeProto = Store.prototype;
+        const proto = Object.getPrototypeOf(this);
+        for (const key of Object.getOwnPropertyNames(proto)) {
+            if (key === 'constructor') continue;
+            if (key in storeProto) continue;
+            const desc = Object.getOwnPropertyDescriptor(proto, key);
+
+            if (typeof desc?.value === 'function') {
+                // Wrap method as action: auto-increment generation + trigger update
+                const method = desc.value;
+                const self = this;
+                (this as any)[key] = function(...args: any[]) {
+                    const wasDispatching = self._dispatching;
+                    self._dispatching = true;
+                    try {
+                        return method.apply(self, args);
+                    } finally {
+                        self._generation++;
+                        if (!wasDispatching) {
+                            self._dispatching = false;
+                            triggerAppUpdate();
+                        }
+                    }
+                };
+            } else if (desc?.get) {
+                // Wrap getter with generation-based caching
+                const getter = desc.get;
+                const self = this;
+                let cachedGen = -1;
+                let cached: any;
+                Object.defineProperty(this, key, {
+                    get() {
+                        if (cachedGen !== self._generation) {
+                            cached = getter.call(self);
+                            cachedGen = self._generation;
+                        }
+                        return cached;
+                    },
+                    enumerable: true,
+                });
+            }
+        }
+    }
+
+    derived<R>(selector: (self: this) => R): () => R {
+        let cachedGen = -1;
+        let cached: R;
+        const self = this;
+        return () => {
+            if (cachedGen !== self._generation) {
+                cached = selector(self);
+                cachedGen = self._generation;
+            }
+            return cached;
+        };
+    }
+
+    provide(component: Component): this {
+        component.provideContext(Store._getContext(this.constructor), this as any);
+        return this;
+    }
+
+    static context<T extends Store>(this: new (...args: any[]) => T): Context<StoreView<T>> {
+        return Store._getContext(this);
+    }
+
+    static from<T extends Store>(this: new (...args: any[]) => T, component: Component): StoreView<T> {
+        return component.getContext(Store._getContext(this));
+    }
+
+    static create<T extends Store>(this: new () => T): StoreView<T> {
+        return new this() as StoreView<T>;
     }
 }
