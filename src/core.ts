@@ -10,8 +10,38 @@ export function isStaticValue<T>(value: Value<T>): value is T {
     return typeof value !== 'function';
 }
 
+export function fields<T extends object>(source: () => T): { readonly [K in keyof T]: () => T[K] } {
+    return new Proxy({} as any, {
+        get(_, key: string | symbol) {
+            return () => (source() as any)[key];
+        }
+    });
+}
+
+export function memoFilter<T>(source: Value<T[]>, predicate: (item: T) => boolean): () => T[] {
+    const getItems = isStaticValue(source) ? () => source : source;
+    let cached: T[] = [];
+    return () => {
+        const items = getItems();
+        let ci = 0;
+        for (let i = 0; i < items.length; ++i) {
+            if (!predicate(items[i])) continue;
+            if (ci >= cached.length || cached[ci] !== items[i]) {
+                cached = items.filter(predicate);
+                return cached;
+            }
+            ci++;
+        }
+        if (ci !== cached.length) {
+            cached = items.filter(predicate);
+            return cached;
+        }
+        return cached;
+    };
+}
+
 export type Primitive = null | undefined | string | number | boolean;
-export type FragmentItem = Value<Primitive> | Component | FragmentItem[];
+export type FragmentItem = Value<Primitive> | Component<Node | null> | FragmentItem[];
 
 type Styles = {
     [K in keyof CSSStyleDeclaration as CSSStyleDeclaration[K] extends Function ? never : K]?: Value<CSSStyleDeclaration[K]>;
@@ -20,9 +50,10 @@ type Styles = {
 type PropertyAttributes<N> = {
     [K in keyof N as
         K extends string ? (
+            K extends 'style' ? K :
             N[K] extends (Function | null | undefined) ? never :
             K extends WritableKeys<N> ? (N[K] extends Primitive ? K : never) :
-            K extends 'style' ? K : never
+            never
         ) : never
     ]?: K extends 'style' ? Styles : Value<N[K]>;
 };
@@ -71,7 +102,7 @@ export class Context<T> {
 
 let forceValuePropagation = false;
 
-export class Component<N extends Node | null = Node | null> {
+export class Component<out N extends Node | null = Node | null> {
     private parent?: Component;
     private firstChild?: Component;
     private lastChild?: Component;
@@ -295,7 +326,7 @@ export class Component<N extends Node | null = Node | null> {
         }
     }
 
-    setAttributes(attributes: Attributes<N>): Component<N> {
+    setAttributes<A extends N>(attributes: Attributes<A>): Component<N> {
         for (const name in attributes) {
             const value = (attributes as any)[name];
 
@@ -479,6 +510,9 @@ export class Component<N extends Node | null = Node | null> {
         if (replacement === replaced) {
             return this;
         }
+        if (replacement.parent === this) {
+            this.removeChild(replacement);
+        }
         this.insertBefore(replacement, replaced);
         this.removeChild(replaced);
         return this;
@@ -492,7 +526,12 @@ export class Component<N extends Node | null = Node | null> {
         for (const op of operations) {
             switch (op.type) {
             case 'replace': this.replaceChild(op.newValue, op.oldValue); break;
-            case 'insert': this.insertBefore(op.value, op.before); break;
+            case 'insert':
+                if (op.value.parent === this) {
+                    this.removeChild(op.value);
+                }
+                this.insertBefore(op.value, op.before);
+                break;
             case 'remove': this.removeChild(op.value); break;
             }
         }
@@ -1066,45 +1105,44 @@ export function For<T extends object>(itemsValue: Value<ReadonlyArray<T>>, rende
     const keyOf = keyFunc ?? (item => item);
     const itemsByKey = new Map<unknown, T>();
     let fragmentMap = new Map<unknown, Component[]>();
-
-    function areChildrenEqual(c: Component | undefined, items: T[]): boolean {
-        for (const item of items) {
-            let fragment = fragmentMap.get(keyOf(item));
-            if (!fragment) {
-                return false;
-            }
-            for (const child of fragment) {
-                if (child !== c) {
-                    return false;
-                }
-                c = c.getNextSibling();
-            }
-        }
-        return c === null;
-    }
+    let lastKeys: unknown[] = [];
+    let lastItems: T[] | undefined;
 
     return new Component(null, 'For').addValueWatcher(itemsValue, function onForItemsChanged(items) {
-        if (areChildrenEqual(this.getFirstChild(), items)) {
-            return;
+        // Fast path: shallow compare with last reconciled items
+        if (lastItems && items.length === lastItems.length) {
+            let same = true;
+            for (let i = 0; i < items.length; ++i) {
+                const key = keyOf(items[i]);
+                if (items[i] !== lastItems[i] || key !== lastKeys[i]) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) return; // zero writes!
         }
+
+        // Slow path: reconcile and snapshot
         itemsByKey.clear();
         const newFragmentMap = new Map<unknown, Component[]>();
+        const newKeys: unknown[] = [];
         const children: Component[] = [];
-        for (let i = 0; i < items.length; ++i) {
-            const key = keyOf(items[i]);
-            itemsByKey.set(key, items[i]);
+        for (const item of items) {
+            const key = keyOf(item);
+            itemsByKey.set(key, item);
+            newKeys.push(key);
             const fragment = fragmentMap.get(key) ?? flattenFragment(renderFunc(() => {
                 const item = itemsByKey.get(key);
                 if (item === undefined) {
-                    throw new Error('missing item in itemsByKey');
+                    throw new Error('missing item in For itemsByKey');
                 }
                 return item;
             }));
             newFragmentMap.set(key, fragment);
-            for (const child of fragment) {
-                children.push(child);
-            }
+            for (const c of fragment) children.push(c);
         }
+        lastItems = items.slice();
+        lastKeys = newKeys;
         fragmentMap = newFragmentMap;
         this.replaceChildren(children);
     }, false);
@@ -1199,8 +1237,8 @@ export function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: Fragme
     });
 }
 
-export function Immediate(...bodyFragment: FragmentItem[]) {
-    return new Component(null, 'Immediate')
+export function Unsuspense(...bodyFragment: FragmentItem[]) {
+    return new Component(null, 'Unsuspense')
         .setSuspenseHandler(function noopSuspenseHandler() { })
         .appendFragment(bodyFragment);
 }
@@ -1220,4 +1258,187 @@ export function Async(promise: Promise<FragmentItem>): Component<null> {
         component.appendFragment(await promise);
     });
     return component;
+}
+
+
+export interface VirtualListOptions<T extends object> {
+    items: Value<ReadonlyArray<T>>;
+    estimateSize: number;
+    direction?: 'vertical' | 'horizontal';
+    buffer?: number;
+    render: (item: T) => FragmentItem;
+    key?: (item: T) => unknown;
+}
+
+export function VirtualList<T extends object>(opts: VirtualListOptions<T>): Component<HTMLDivElement> {
+    const keyOf = opts.key ?? (item => item);
+    const buffer = opts.buffer ?? 3;
+    const horizontal = opts.direction === 'horizontal';
+    const estimateSize = opts.estimateSize;
+    const itemsValue = opts.items;
+    const renderFunc = opts.render;
+
+    const wrapperMap = new Map<unknown, Component<HTMLDivElement>>();
+    const measuredSizes = new Map<unknown, number>();
+    let visibleKeys = new Set<unknown>();
+    let prevVisible = new Set<unknown>();
+    let offsets = new Float64Array(0);
+    let offsetsDirty = true;
+    let lastItemCount = -1;
+    let lastSpacerSize = -1;
+    let reconcileGeneration = 0;
+    let lastReconciledGeneration = -1;
+
+    // Measure actual item sizes
+    const wrapperToKey = new Map<Element, unknown>();
+    let rafPending = false;
+    const observer = new ResizeObserver(entries => {
+        let dirty = false;
+        for (const entry of entries) {
+            const key = wrapperToKey.get(entry.target);
+            if (key === undefined) continue;
+            const size = horizontal
+                ? entry.borderBoxSize[0].inlineSize
+                : entry.borderBoxSize[0].blockSize;
+            if (size > 0 && measuredSizes.get(key) !== size) {
+                measuredSizes.set(key, size);
+                dirty = true;
+            }
+        }
+        if (dirty) {
+            offsetsDirty = true;
+            if (!rafPending) {
+                rafPending = true;
+                requestAnimationFrame(() => {
+                    rafPending = false;
+                    reconcile();
+                });
+            }
+        }
+    });
+
+    function sizeOf(key: unknown): number {
+        return measuredSizes.get(key) ?? estimateSize;
+    }
+
+    const spacer = new Component(document.createElement('div'), 'VirtualList.spacer');
+    spacer.node.style.position = 'relative';
+
+    const container = new Component(document.createElement('div'), 'VirtualList.container');
+    container.node.style.overflow = 'auto';
+    if (horizontal) {
+        container.node.style.overflowY = 'hidden';
+    }
+    container.appendChild(spacer);
+
+    container.addEventListener('scroll', function() {
+        ++reconcileGeneration;
+        reconcile();
+    });
+    container.addUpdateListener(reconcile);
+    container.addMountedListener(function() {
+        requestAnimationFrame(reconcile);
+    });
+    container.addUnmountListener(function() {
+        observer.disconnect();
+    });
+
+    return container;
+
+    function reconcile() {
+        const items = isStaticValue(itemsValue) ? itemsValue : itemsValue();
+        const n = items.length;
+        const scrollPos = horizontal ? container.node.scrollLeft : container.node.scrollTop;
+        const viewportSize = horizontal ? container.node.clientWidth : container.node.clientHeight;
+
+        if (viewportSize === 0) return;
+
+        // Skip if already reconciled this generation (avoids double reconcile from scroll + updateRoot)
+        if (reconcileGeneration === lastReconciledGeneration && !offsetsDirty && n === lastItemCount) return;
+        lastReconciledGeneration = reconcileGeneration;
+
+        // Recompute cumulative offsets only when measurements or items changed
+        if (offsetsDirty || n !== lastItemCount) {
+            if (offsets.length < n + 1) {
+                offsets = new Float64Array(n + 1);
+            }
+            for (let i = 0; i < n; i++) {
+                offsets[i + 1] = offsets[i] + sizeOf(keyOf(items[i]));
+            }
+            offsetsDirty = false;
+            lastItemCount = n;
+
+            const spacerSize = Math.round(offsets[n]);
+            if (spacerSize !== lastSpacerSize) {
+                if (horizontal) {
+                    spacer.node.style.width = spacerSize + 'px';
+                    spacer.node.style.height = '100%';
+                } else {
+                    spacer.node.style.height = spacerSize + 'px';
+                }
+                lastSpacerSize = spacerSize;
+            }
+        }
+
+        // Binary search for first visible item (first i where offsets[i+1] > scrollPos)
+        let lo = 0, hi = n;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (offsets[mid + 1] <= scrollPos) lo = mid + 1;
+            else hi = mid;
+        }
+        const start = Math.max(0, lo - buffer);
+
+        // Binary search for first item past viewport (first i where offsets[i] >= scrollPos + viewportSize)
+        lo = start; hi = n;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (offsets[mid] < scrollPos + viewportSize) lo = mid + 1;
+            else hi = mid;
+        }
+        const end = Math.min(n, lo + buffer);
+
+        // Reuse Set from previous reconcile
+        const newVisible = prevVisible;
+        newVisible.clear();
+
+        for (let i = start; i < end; i++) {
+            const item = items[i];
+            const key = keyOf(item);
+            newVisible.add(key);
+
+            let wrapper = wrapperMap.get(key);
+            if (!wrapper) {
+                wrapper = new Component(document.createElement('div'), 'VirtualList.item');
+                wrapper.node.style.position = 'absolute';
+                if (horizontal) {
+                    wrapper.node.style.top = '0';
+                    wrapper.node.style.bottom = '0';
+                } else {
+                    wrapper.node.style.left = '0';
+                    wrapper.node.style.right = '0';
+                }
+                wrapper.appendFragment(renderFunc(item));
+                wrapperMap.set(key, wrapper);
+                wrapperToKey.set(wrapper.node, key);
+                observer.observe(wrapper.node);
+            }
+
+            // Reposition (transform is composite-only, cheap even when unchanged)
+            wrapper.node.style.transform = horizontal
+                ? `translateX(${offsets[i]}px)` : `translateY(${offsets[i]}px)`;
+
+            if (!visibleKeys.has(key)) {
+                spacer.appendChild(wrapper);
+            }
+        }
+
+        for (const key of visibleKeys) {
+            if (!newVisible.has(key)) {
+                spacer.removeChild(wrapperMap.get(key)!);
+            }
+        }
+        prevVisible = visibleKeys;
+        visibleKeys = newVisible;
+    }
 }

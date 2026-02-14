@@ -434,6 +434,24 @@ function runLevenshteinTests() {
 runLevenshteinTests();
 
 
+export function createDirtyTracker() {
+    let gen = 0;
+    return {
+        invalidate() { gen++; },
+        derived<T>(compute: () => T): () => T {
+            let at = -1;
+            let cached: T;
+            return () => {
+                if (at !== gen) {
+                    cached = compute();
+                    at = gen;
+                }
+                return cached;
+            };
+        }
+    };
+}
+
 export function generateUUID() {
     let d = new Date().getTime();
     let d2 = ((typeof performance !== 'undefined') && performance.now && (performance.now() * 1000)) || 0;

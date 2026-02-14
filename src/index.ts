@@ -4,18 +4,21 @@ import { Router, Outlet } from './routing';
 const { nav, main, button } = HTML;
 
 
-const router = new Router(RootPage);
+export const router = new Router(RootPage);
 
 export const homeRoute = router.subRoute('/', DefaultPage);
-export const testRoute = router.subRoute('/test', async () => (await import('./pages/test')).TestPage(), true);
-export const todoRoute = router.subRoute('/todo', async () => (await import('./pages/todo')).TodoPage());
-export const benchRoute = router.subRoute('/bench', async () => (await import('./pages/bench')).BenchmarkPage(), true);
+export const testRoute = router.subRoute('/test', async () => (await import('./pages/test')).TestPage(), { transient: true, importPath: './pages/test' });
+export const todoRoute = router.subRoute('/todo', async () => (await import('./pages/todo')).TodoPage(), { importPath: './pages/todo' });
+export const benchRoute = router.subRoute('/bench', async () => (await import('./pages/bench')).BenchmarkPage(), { transient: true, importPath: './pages/bench' });
+export const virtualRoute = router.subRoute('/virtual', async () => (await import('./pages/virtual')).VirtualListPage(), { transient: true, importPath: './pages/virtual' });
 
-export const prefsRoute = router.subRoute('/prefs', async () => (await import('./pages/prefs')).PreferencesPage());
-export const prefListRoute = prefsRoute.subRoute('/', async () => (await import('./pages/prefs')).PreferencesListPage());
-export const editPrefRoute = prefsRoute.subRoute('/name:string', async ({name}) => (await import('./pages/prefs')).EditPreferencePage({name}));
+export const prefsRoute = router.subRoute('/prefs', async () => (await import('./pages/prefs')).PreferencesPage(), { importPath: './pages/prefs' });
+export const prefListRoute = prefsRoute.subRoute('/', async () => (await import('./pages/prefs')).PreferencesListPage(), { importPath: './pages/prefs' });
+export const editPrefRoute = prefsRoute.subRoute('/name:string', async ({ name }) => (await import('./pages/prefs')).EditPreferencePage({ name }), { importPath: './pages/prefs' });
 
-router.mount(document.body);
+if (typeof document !== 'undefined') {
+    router.mount(document.body);
+}
 
 
 
@@ -26,6 +29,7 @@ function RootPage(): FragmentItem {
             todoRoute.Link({}, 'Todo'),
             prefsRoute.Link({}, 'Preferences'),
             benchRoute.Link({}, 'Benchmark'),
+            virtualRoute.Link({}, 'Virtual List'),
             button('Print tree', {
                 onclick() {
                     console.log(dumpComponentTree(this.getRoot()));
@@ -47,7 +51,7 @@ function dumpComponentTree(root: Component): string {
     const result: string[] = [];
     dumpComponent(root, 0);
     return result.join('');
-    
+
     function dumpComponent(component: Component, depth: number) {
         for (let i = 0; i < depth; ++i) {
             result.push('  ');

@@ -221,6 +221,11 @@ export function Outlet() {
 }
 
 
+export type RouteOptions = {
+    transient?: boolean;
+    importPath?: string;
+};
+
 export class Route<Args> {
     private readonly subRoutes: Route<unknown>[] = [];
     private readonly matcher: UrlMatcher;
@@ -233,14 +238,18 @@ export class Route<Args> {
     protected outlet?: Component;
 
     protected readonly component: Component<null>;
+    private readonly transient?: boolean;
+    private readonly importPath?: string;
 
     protected constructor(
         private readonly parent: Route<unknown> | null,
         private readonly urlSpec: string,
         private readonly makeContent: (args: any) => FragmentItem | Promise<FragmentItem>,
-        private readonly transient?: boolean
+        options?: RouteOptions
     ) {
         this.matcher = parseUrlSpec(urlSpec);
+        this.transient = options?.transient;
+        this.importPath = options?.importPath;
         const name = urlSpec ? `Route[${urlSpec}]` : 'Router';
         this.component = new Component(null, name).provideContext(RouteContext, this);
     }
@@ -248,14 +257,25 @@ export class Route<Args> {
     subRoute<UrlSpec extends string, ChildArgs = Args & ParseUrlSpec<UrlSpec>>(
         urlSpec: UrlSpec,
         makeContent: (args: FunctionsOf<ChildArgs>) => FragmentItem | Promise<FragmentItem>,
-        transient?: boolean
+        options?: RouteOptions
     ): Route<ChildArgs> {
         if (!urlSpec.startsWith('/')) {
             throw new Error('URL spec must start with /');
         }
-        const route = new Route<ChildArgs>(this, urlSpec, makeContent, transient);
+        const route = new Route<ChildArgs>(this, urlSpec, makeContent, options);
         this.subRoutes.push(route);
         return route;
+    }
+
+    getMatchedChunks(): string[] {
+        const chunks: string[] = [];
+        if (this.importPath) {
+            chunks.push(this.importPath);
+        }
+        if (this.matchedSubRoute) {
+            chunks.push(...this.matchedSubRoute.getMatchedChunks());
+        }
+        return chunks;
     }
 
     Link(args: Args, ...fragment: HTMLChildFragment<HTMLAnchorElement>[]) {
@@ -403,6 +423,17 @@ export class Router extends Route<{}> {
             console.warn('replaceUrl with unknown url: ' + url);
             return false;
         }
+    }
+
+    matches(url: string): boolean {
+        return this.tryMatch(url);
+    }
+
+    getChunksForUrl(url: string): string[] | null {
+        if (!this.tryMatch(url)) {
+            return null;
+        }
+        return this.getMatchedChunks();
     }
 
     private tryMatchLocation = () => {

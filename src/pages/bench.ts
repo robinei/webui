@@ -1,5 +1,5 @@
 
-import { FragmentItem, HTML, Lazy, Immediate } from '../core';
+import { FragmentItem, HTML, Lazy, Unsuspense } from '../core';
 import { asyncDelay, Semaphore } from '../util';
 
 function benchmark(iters: number, func: () => void): number {
@@ -35,7 +35,7 @@ export function BenchmarkPage(): FragmentItem {
     const domIters = 100000;
     const argIters = 10000000;
 
-    return Immediate(div(
+    return Unsuspense(div(
         h4('Benchmarks'),
         h5('DOM creation'),
         Benchmark('Component', domIters, () => {

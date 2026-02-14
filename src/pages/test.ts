@@ -1,6 +1,6 @@
 import { errorDescription, asyncDelay } from '../util';
 import { FragmentItem,
-    HTML, If, Repeat, Immediate, ErrorBoundary, Lazy, Async, Match, Else, Component } from '../core';
+    HTML, If, Repeat, Unsuspense, ErrorBoundary, Lazy, Async, Match, Else, Component } from '../core';
 
 const { span, br, button, table, tr, td, input, pre, b, p } = HTML;
 
@@ -40,7 +40,7 @@ export function TestPage(): FragmentItem {
                 return [
                     'Loaded 1',
                     br(),
-                    Immediate(
+                    Unsuspense(
                         [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300].map(t => Async(asyncDelay(t).then(() => b(`${t},`)))),
                     ),
                     br(),
