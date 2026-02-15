@@ -4,8 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Development
 
-- **Build (watch mode):** `./build.sh` — runs `bun --watch build --outdir=./build --target=browser --sourcemap=inline src/index.ts`
-- **Dev server:** `python serve.py` — serves on http://localhost:3000, with SPA fallback (404→index.html). Use `--slow` to add 1s delay per request for debugging loading concurrency.
+- **Dev server:** `bun server.ts` — builds, watches for changes, and serves on http://localhost:3000.
 - **No test runner** — tests are inline `console.assert()` calls in `util.ts` and `routing.ts` that run automatically when modules load. Check the browser console for failures.
 - **No linter or formatter configured.**
 - **No package.json** — this project uses Bun directly with zero external dependencies.
@@ -13,6 +12,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Architecture
 
 This is a **custom reactive component framework** for building web UIs, written entirely from scratch in TypeScript (~2700 LOC).
+
+### Server (`server.ts`)
+
+A Bun-based dev server that builds, watches, and serves the app. Key behavior:
+
+- **Build:** Uses `Bun.build()` with code splitting (`splitting: true`), linked sourcemaps, and `publicPath: '/build/'` so inter-chunk imports use absolute paths.
+- **Metafile-driven manifest:** After each build, parses the metafile to map route `importPath` values (e.g. `./pages/test`) to output chunk files, walking transitive static deps.
+- **Inline HTML generation:** No static `index.html`. The server generates HTML per-request with:
+  - An **import map** using `data:` URLs for all chunks needed by the matched route (entry deps + route-specific chunks), with bare specifier keys (required because `data:` URLs lack a hierarchical base for URL resolution). Non-inlined chunks (other routes) get bare specifier → URL path mappings for lazy SPA loading.
+  - The **entry point** inlined as `<script type="module">`.
+  - **Stylesheets** (`bahunya.min.css` + `styles.css`) embedded as `<style>`.
+- **Loading model:** Initial page load is a single HTTP response with everything inlined. SPA navigation loads one chunk per new route on first visit.
+- **Source maps:** Linked `.map` files served from `/build/`. `//# sourceURL` directives give data URL modules clean paths in `Error.stack`. `//# sourceMappingURL` rewritten to absolute URLs so browsers can fetch maps from data URL module contexts.
+- **Percent encoding for data URLs:** Encodes `%`, `\t`, `\n`, `\r`, `#` (structurally required), plus all non-ASCII as UTF-8 byte sequences via `encodeURIComponent`. `charset=utf-8` on the MIME type.
 
 ### Core (`src/core.ts`)
 
@@ -31,9 +44,10 @@ Type-safe URL routing built on the History API:
 
 - **`Router`** extends `Route` — mounted on a DOM node, manages navigation.
 - **Route specs** use typed parameters: `/prefs/name:string`, `/users/:id:number`. The `ParseUrlSpec` type extracts parameter types at compile time.
-- **`route.subRoute(spec, handler)`** — defines nested routes. Handlers can be async for code splitting.
+- **`route.subRoute(spec, handler)`** — defines nested routes. Handlers can be async for code splitting. Options include `importPath` for chunk manifest mapping.
 - **`route.Link(attrs, ...content)`** — creates `<a>` elements with proper navigation.
 - **`Outlet()`** — renders the matched child route's content.
+- **`router.getChunksForUrl(url)`** — server-side: matches a URL and returns the `importPath` values for all matched routes (used by `server.ts` to determine which chunks to inline).
 
 ### Utilities (`src/util.ts`)
 
