@@ -49,6 +49,19 @@ Type-safe URL routing built on the History API:
 - **`Outlet()`** — renders the matched child route's content.
 - **`router.getChunksForUrl(url)`** — server-side: matches a URL and returns the `importPath` values for all matched routes (used by `server.ts` to determine which chunks to inline).
 
+### CSS (`src/css.ts`)
+
+Module-level scoped CSS injection via `css()`. Complements the existing per-instance reactive `style: { ... }` attributes:
+
+- **`css(sheet)`** — takes a style sheet object, generates hashed class names (e.g. `root-x7k2m`), compiles CSS rules, and injects a `<style>` tag into `document.head` (deduped, SSR-safe)
+- Supports camelCase properties, `&`-prefixed pseudo-classes/elements (`&:hover`, `&::before`), `@media` at-rules, and descendant selectors
+- Returns a map of `{ className: hashedClassName }` strings, used via the `className` attribute
+- No changes to `core.ts` needed — `className` is handled by `setElementAttribute` as a DOM property, and `Value<string>` means reactive class names work via thunks
+
+**Two styling systems:**
+- `css()` → static, scoped class-based styles (declared at module level, injected once)
+- `style: { ... }` attribute → dynamic, reactive inline styles (per instance, re-evaluated on tree updates)
+
 ### Utilities (`src/util.ts`)
 
 - `calcLevenshteinOperations()` — used by `For` and `replaceChildren` for efficient list reconciliation
@@ -127,6 +140,35 @@ const tracker = createDirtyTracker();
 const expensiveResult = tracker.derived(() => computeExpensiveThing(data));
 // On mutation: tracker.invalidate();
 // On read: expensiveResult() — recomputes only if generation changed
+```
+
+### Scoped CSS with `css()`
+
+Declare styles at module level; use the returned class name map on components:
+
+```typescript
+import { css } from '../css';
+
+const s = css({
+    root: {
+        padding: '8px 14px',
+        borderRadius: '8px',
+        '&:hover': { background: '#334155' },
+    },
+    title: { fontWeight: 'bold', color: '#60a5fa' },
+    '@media (max-width: 600px)': {
+        root: { padding: '4px 8px' },
+    },
+});
+
+// Static class name
+div({ className: s.root }, ...)
+
+// Reactive class name (thunk — works with existing value watcher system)
+div({ className: () => isActive ? s.root : '' }, ...)
+
+// Coexists with inline reactive styles
+div({ className: s.root, style: { opacity: () => visible ? '1' : '0.5' } }, ...)
 ```
 
 ### Control Flow Components
