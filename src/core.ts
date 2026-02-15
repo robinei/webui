@@ -100,7 +100,6 @@ export class Context<T> {
 
 
 
-let forceValuePropagation = false;
 let insideUpdate = false;
 
 let mountedRootComponent: Component | null = null;
@@ -312,31 +311,26 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck: boolean = true): Component<N> {
-        const self = this;
-        const boundWatcher = watcher.bind(self);
-        let lastEmittedValue: T | Nil = Nil;
+        const boundWatcher = watcher.bind(this);
 
         if (isStaticValue(value)) {
-            onNewValue(value);
+            try {
+                boundWatcher(value);
+            } catch (e) {
+                this.injectError(e);
+            }
             return this;
         }
 
+        let lastEmittedValue: T | Nil = Nil;
         this.addUpdateListener(function onValueWatcherUpdate() {
             const newValue = value();
-            onNewValue(newValue);
+            if (!equalCheck || lastEmittedValue !== newValue) {
+                lastEmittedValue = newValue;
+                boundWatcher(newValue);
+            }
         }, true);
         return this;
-
-        function onNewValue(newValue: T): void {
-            try {
-                if (forceValuePropagation || !equalCheck || lastEmittedValue !== newValue) {
-                    lastEmittedValue = newValue;
-                    boundWatcher(newValue);
-                }
-            } catch (e) {
-                self.injectError(e);
-            }
-        }
     }
 
     setAttributes<A extends N>(attributes: Attributes<A>): Component<N> {
@@ -762,7 +756,6 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     update(): Component<N> {
-        const wasInsideUpdate = insideUpdate;
         insideUpdate = true;
         try {
             const stack: Component[] = [this];
@@ -772,7 +765,7 @@ export class Component<out N extends Node | null = Node | null> {
                     break;
                 }
                 if (!component.mounted) {
-                    break;
+                    continue;
                 }
                 ++touchedComponents;
 
@@ -800,7 +793,7 @@ export class Component<out N extends Node | null = Node | null> {
                 }
             }
         } finally {
-            insideUpdate = wasInsideUpdate;
+            insideUpdate = false;
         }
         return this;
     }
