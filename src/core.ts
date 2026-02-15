@@ -1,4 +1,4 @@
-import { calcLevenshteinOperations, WritableKeys, errorDescription, isPlainObject } from './util';
+import { longestIncreasingSubsequence, WritableKeys, errorDescription, isPlainObject } from './util';
 
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
@@ -534,19 +534,51 @@ export class Component<out N extends Node | null = Node | null> {
         if (!this.firstChild) {
             return this.appendChildren(children);
         }
-        const operations = calcLevenshteinOperations(this.getChildren(), children);
-        for (const op of operations) {
-            switch (op.type) {
-            case 'replace': this.replaceChild(op.newValue, op.oldValue); break;
-            case 'insert':
-                if (op.value.parent === this) {
-                    this.removeChild(op.value);
+
+        // Map each new child to its target index
+        const newIndex = new Map<Component, number>();
+        for (let i = 0; i < children.length; i++) {
+            newIndex.set(children[i]!, i);
+        }
+
+        // Walk old children: remove those absent from new list, collect new-indices of kept ones
+        const keptNewIndices: number[] = [];
+        const keptChildren: Component[] = [];
+        let c = this.firstChild;
+        while (c) {
+            const next = c.nextSibling;
+            const idx = newIndex.get(c);
+            if (idx !== undefined) {
+                keptNewIndices.push(idx);
+                keptChildren.push(c);
+            } else {
+                this.removeChild(c);
+            }
+            c = next;
+        }
+
+        // Find LIS — these children are already in correct relative order and don't need to move
+        const lisPositions = longestIncreasingSubsequence(keptNewIndices);
+        const stable = new Set<Component>();
+        for (const pos of lisPositions) {
+            stable.add(keptChildren[pos]!);
+        }
+
+        // Walk new children right-to-left, using stable children as anchors
+        let anchor: Component | undefined;
+        for (let i = children.length - 1; i >= 0; i--) {
+            const child = children[i]!;
+            if (stable.has(child)) {
+                anchor = child;
+            } else {
+                if (child.parent === this) {
+                    this.removeChild(child);
                 }
-                this.insertBefore(op.value, op.before);
-                break;
-            case 'remove': this.removeChild(op.value); break;
+                this.insertBefore(child, anchor);
+                anchor = child;
             }
         }
+
         return this;
     }
 

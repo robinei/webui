@@ -299,139 +299,72 @@ tvRunTests();
 
 
 
-export function calcLevenshteinMatrix(a: unknown[], b: unknown[]): Uint16Array {
-    const h = a.length + 1;
-    const w = b.length + 1;
-    const d = new Uint16Array(h * w);
-    for (let y = 1; y < h; ++y) {
-        d[y*w] = y;
-    }
-    for (let x = 1; x < w; ++x) {
-        d[x] = x;
-    }
-    for (let y = 1; y < h; ++y) {
-        for (let x = 1; x < w; ++x) {
-            const cost = a[y-1] === b[x-1] ? 0 : 1;
-            d[y*w + x] = Math.min(
-                d[(y - 1)*w + x]! + 1,          // deletion
-                d[y*w + x - 1]! + 1,            // insertion
-                d[(y - 1)*w + x - 1]! + cost    // substitution
-            );
-        }
-    }
-    return d;
-}
+/**
+ * Returns indices into `arr` that form the longest strictly increasing subsequence.
+ * O(n log n) time, O(n) space.
+ */
+export function longestIncreasingSubsequence(arr: number[]): number[] {
+    const n = arr.length;
+    if (n === 0) return [];
 
-export function calcLevenshteinDistance(a: unknown[], b: unknown[]): number {
-    const d = calcLevenshteinMatrix(a, b);
-    return d[d.length - 1]!;
-}
+    // tails[i] = index in arr of the smallest tail of all increasing subsequences of length i+1
+    const tails: number[] = [];
+    // prev[i] = index in arr of the predecessor of arr[i] in the best subsequence ending at i
+    const prev = new Int32Array(n).fill(-1);
 
-type LevenshteinOperation<T> =
-    { type: 'insert', value: T, before: T | undefined } |
-    { type: 'remove', value: T } |
-    { type: 'replace', oldValue: T, newValue: T };
-
-export function calcLevenshteinOperations<T>(a: T[], b: T[]): LevenshteinOperation<T>[] {
-    const d = calcLevenshteinMatrix(a, b);
-    const h = a.length + 1;
-    const w = b.length + 1;
-    let y = h - 1;
-    let x = w - 1;
-    const operations: LevenshteinOperation<T>[] = [];
-    for (;;) {
-        const curr = d[y*w + x]!;
-        if (curr === 0) {
-            break;
-        }
-        const diag = y > 0 && x > 0 ? d[(y - 1)*w + x - 1]! : 200000000;
-        const up = y > 0 ? d[(y - 1)*w + x]! : 100000000;
-        const left = x > 0 ? d[y*w + x - 1]! : 100000000;
-        if (diag <= up && diag <= left && (diag === curr || diag === curr - 1)) {
-            if (diag === curr - 1) {
-                operations.push({ type: 'replace', oldValue: a[y - 1]!, newValue: b[x - 1]! });
+    for (let i = 0; i < n; i++) {
+        const val = arr[i]!;
+        // Binary search: find leftmost position in tails where arr[tails[pos]] >= val
+        let lo = 0, hi = tails.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (arr[tails[mid]!]! < val) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
             }
-            --y;
-            --x;
-        } else if (left <= up && (left === curr || left === curr - 1)) {
-            operations.push({ type: 'insert', value: b[x - 1]!, before: x === w ? undefined : b[x]! ?? null });
-            --x;
-        } else {
-            operations.push({ type: 'remove', value: a[y - 1]! });
-            --y;
         }
+        if (lo > 0) {
+            prev[i] = tails[lo - 1]!;
+        }
+        tails[lo] = i;
     }
-    return operations;
+
+    // Reconstruct
+    const result = new Array<number>(tails.length);
+    let idx = tails[tails.length - 1]!;
+    for (let i = tails.length - 1; i >= 0; i--) {
+        result[i] = idx;
+        idx = prev[idx]!;
+    }
+    return result;
 }
 
-function printLevenshteinMatrix(a: string[], b: string[]): void {
-    const d = calcLevenshteinMatrix(a, b);
-    const h = a.length + 1;
-    const w = b.length + 1;
-    const log: string[] = ['    '];
-    for (let x = 0; x < w-1; ++x) {
-        log.push(b[x]!);
-        log.push(' ');
+function runLISTests() {
+    // Empty
+    console.assert(arraysEqual(longestIncreasingSubsequence([]), []));
+    // Single element
+    console.assert(arraysEqual(longestIncreasingSubsequence([5]), [0]));
+    // Already sorted
+    console.assert(arraysEqual(longestIncreasingSubsequence([1, 2, 3, 4]), [0, 1, 2, 3]));
+    // Reversed — LIS length 1
+    console.assert(longestIncreasingSubsequence([4, 3, 2, 1]).length === 1);
+    // Mixed — [1, 3, 4] is the LIS (indices 0, 1, 2)
+    const lis1 = longestIncreasingSubsequence([1, 3, 4, 0, 2]);
+    console.assert(lis1.length === 3);
+    console.assert(lis1[0]! < lis1[1]! && lis1[1]! < lis1[2]!); // indices are increasing
+    for (let i = 1; i < lis1.length; i++) {
+        console.assert([1, 3, 4, 0, 2][lis1[i]!]! > [1, 3, 4, 0, 2][lis1[i - 1]!]!); // values are increasing
     }
-    log.push('\n');
-    for (let y = 0; y < h; ++y) {
-        log.push(y === 0 ? ' ' : a[y - 1]!);
-        log.push(' ');
-        for (let x = 0; x < w; ++x) {
-            log.push(d[y*w + x]!.toString());
-            log.push(' ');
-        }
-        log.push('\n');
-    }
-    console.log(log.join(''));
+    // [3, 1, 4, 1, 5, 9, 2, 6] — LIS length 4 (e.g. 3,4,5,9 or 1,4,5,6)
+    console.assert(longestIncreasingSubsequence([3, 1, 4, 1, 5, 9, 2, 6]).length === 4);
+    // Duplicates — strictly increasing, so duplicates don't extend
+    console.assert(longestIncreasingSubsequence([2, 2, 2, 2]).length === 1);
+    // Two interleaved sequences
+    console.assert(longestIncreasingSubsequence([0, 8, 1, 9, 2, 10, 3]).length === 4); // 0,1,2,3
 }
 
-function runLevenshteinTests() {
-    verifyExample('f', '', 1);
-    verifyExample('', 'f', 1);
-    verifyExample('', '', 0);
-    verifyExample('democrat', 'republican', 8);
-    verifyExample('foo', 'foo',  0);
-    verifyExample('oo', 'foo', 1);
-    verifyExample('foo', 'doo', 1);
-    verifyExample('foo', 'fao', 1);
-    verifyExample('foo', 'fo', 1);
-    verifyExample('fo', 'foo', 1);
-    verifyExample('foo', 'faoo', 1);
-    verifyExample('abcdefgh', 'bCdDefh', 4);
-    verifyExample('abcdef', 'abc', 3);
-
-
-    function verifyExample(from: string, to: string, expectedDistance: number): void {
-        //printLevenshteinMatrix(_(from), _(to));
-        const operations = calcLevenshteinOperations(_(from), _(to));
-        console.assert(operations.length === expectedDistance);
-        let transformed = from;
-        for (const op of operations) {
-            switch (op.type) {
-            case 'replace':
-                transformed = transformed.replace(op.oldValue, op.newValue);
-                break;
-            case 'insert':
-                const i = op.before ? transformed.indexOf(op.before) : transformed.length;
-                transformed = [transformed.slice(0, i), op.value, transformed.slice(i)].join('');
-                break;
-            case 'remove':
-                transformed = transformed.replace(op.value, '');
-                break;
-            }
-            //console.log(transformed);
-        }
-        console.assert(calcLevenshteinDistance(_(from), _(to)) === expectedDistance);
-        console.assert(transformed === to, transformed, '===', to);
-    }
-
-    function _(s: string): string[] {
-        return s.split('');
-    }
-}
-
-runLevenshteinTests();
+runLISTests();
 
 
 export function createDirtyTracker() {
