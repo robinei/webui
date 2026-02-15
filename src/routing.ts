@@ -1,4 +1,4 @@
-import { Component, Context, FragmentItem, HTML, HTMLChildFragment } from './core';
+import { Component, Context, FragmentItem, HTML, HTMLChildFragment, hasStoreHydrationData, setStoreHydrationData } from './core';
 import { deepEqual } from './util';
 
 const { a } = HTML;
@@ -221,9 +221,22 @@ export function Outlet() {
 }
 
 
+// TODO: Parallel data loading — when parent + child both have initStores, the client-side
+//   path waterfalls (parent fetches → renders → mounts Outlet → child fetches). Should kick
+//   off all matched loaders simultaneously like React Router / TanStack Router.
+// TODO: Prefetching on intent — preload route code/data on link hover or viewport intersection.
+//   importPath and initStores per route already provide the pieces needed.
+// TODO: Scroll restoration — remember scroll position on back-navigation. Needs
+//   scrollRestoration: 'manual' + position cache keyed by history entry.
+// TODO: Navigation blocking — "unsaved changes" guards for SPA navigation (beforeunload
+//   only covers tab close).
+// TODO: 404 / catch-all routes — wildcard fallback for unmatched URLs instead of silent
+//   redirect to /.
+
 export type RouteOptions = {
     transient?: boolean;
     importPath?: string;
+    initStores?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
 };
 
 export class Route<Args> {
@@ -240,6 +253,7 @@ export class Route<Args> {
     protected readonly component: Component<null>;
     private readonly transient?: boolean;
     private readonly importPath?: string;
+    private readonly initStoresFn?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
     protected constructor(
         private readonly parent: Route<unknown> | null,
@@ -250,6 +264,7 @@ export class Route<Args> {
         this.matcher = parseUrlSpec(urlSpec);
         this.transient = options?.transient;
         this.importPath = options?.importPath;
+        this.initStoresFn = options?.initStores;
         const name = urlSpec ? `Route[${urlSpec}]` : 'Router';
         this.component = new Component(null, name).provideContext(RouteContext, this);
     }
@@ -276,6 +291,17 @@ export class Route<Args> {
             chunks.push(...this.matchedSubRoute.getMatchedChunks());
         }
         return chunks;
+    }
+
+    getMatchedInitStores(): Array<() => Promise<Record<string, unknown>>> {
+        const fns: Array<() => Promise<Record<string, unknown>>> = [];
+        if (this.initStoresFn) {
+            const args = { ...this.args };
+            const fn = this.initStoresFn;
+            fns.push(() => fn(args));
+        }
+        if (this.matchedSubRoute) fns.push(...this.matchedSubRoute.getMatchedInitStores());
+        return fns;
     }
 
     Link(args: Args, ...fragment: HTMLChildFragment<HTMLAnchorElement>[]) {
@@ -361,7 +387,15 @@ export class Route<Args> {
             for (const key in this.args) {
                 argFuncs[key] = () => this.args![key];
             }
-            this.component.setLazyContent(function makeRouteContent() { return self.makeContent(argFuncs); }, this.transient);
+            if (this.initStoresFn && !hasStoreHydrationData()) {
+                this.component.setLazyContent(async function makeRouteContentWithStores() {
+                    const data = await self.initStoresFn!(self.args!);
+                    setStoreHydrationData(data);
+                    return self.makeContent(argFuncs);
+                }, this.transient);
+            } else {
+                this.component.setLazyContent(function makeRouteContent() { return self.makeContent(argFuncs); }, this.transient);
+            }
             this.contentAppended = true;
         }
 

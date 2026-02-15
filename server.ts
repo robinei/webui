@@ -153,7 +153,7 @@ async function build() {
     return true;
 }
 
-function generateHtml(routeChunkUrls: string[], origin: string): string {
+function generateHtml(routeChunkUrls: string[], origin: string, storeData?: Record<string, unknown> | null): string {
     const inlinedUrls = new Set([...entryChunks, ...routeChunkUrls]);
 
     // All chunk URLs (everything except the entry point itself)
@@ -184,11 +184,14 @@ function generateHtml(routeChunkUrls: string[], origin: string): string {
     const importMap = JSON.stringify({ imports });
     const entryContent = rewriteImports(fileContents.get(entryUrl) || '');
 
+    const storeDataTag = storeData ? `\n    <script type="application/json" id="__STORE_DATA__">${JSON.stringify(storeData)}</script>` : '';
+
     return `<!DOCTYPE html>
 <html>
 <head>
+    <meta charset="utf-8">
     <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4//8/AAX+Av7czFnnAAAAAElFTkSuQmCC">
-    <style>${stylesContent}</style>
+    <style>${stylesContent}</style>${storeDataTag}
     <script type="importmap">${importMap}</script>
 </head>
 <body>
@@ -239,7 +242,17 @@ const server = Bun.serve({
                 }
             }
 
-            return new Response(generateHtml(routeChunks, url.origin), {
+            // Call initStores if any matched routes have them
+            const initFns = router.getMatchedInitStores();
+            let storeData: Record<string, unknown> | null = null;
+            if (initFns.length > 0) {
+                storeData = {};
+                for (const fn of initFns) {
+                    Object.assign(storeData, await fn());
+                }
+            }
+
+            return new Response(generateHtml(routeChunks, url.origin, storeData), {
                 headers: { 'Content-Type': 'text/html' },
             });
         }

@@ -1,4 +1,4 @@
-import { Component, FragmentItem, HTML, Suspense } from './core';
+import { Component, FragmentItem, HTML, Suspense, readEmbeddedStoreData } from './core';
 import { Router, Outlet } from './routing';
 
 const { nav, main, button } = HTML;
@@ -16,7 +16,27 @@ export const prefsRoute = router.subRoute('/prefs', async () => (await import('.
 export const prefListRoute = prefsRoute.subRoute('/', async () => (await import('./pages/prefs')).PreferencesListPage(), { importPath: './pages/prefs' });
 export const editPrefRoute = prefsRoute.subRoute('/name:string', async ({ name }) => (await import('./pages/prefs')).EditPreferencePage({ name }), { importPath: './pages/prefs' });
 
+export const newsRoute = router.subRoute('/news',
+    async () => (await import('./pages/news')).NewsPage(),
+    { importPath: './pages/news' }
+);
+export const newsListRoute = newsRoute.subRoute('/',
+    async () => (await import('./pages/news')).NewsListPage(),
+    {
+        importPath: './pages/news',
+        initStores: async () => (await import('./pages/news')).initStores()
+    }
+);
+export const newsPostRoute = newsRoute.subRoute('/id:number',
+    async ({ id }) => (await import('./pages/news')).NewsPostPage({ id }),
+    {
+        importPath: './pages/news',
+        initStores: async (args) => (await import('./pages/news')).initPostStores(args.id as number)
+    }
+);
+
 if (typeof document !== 'undefined') {
+    readEmbeddedStoreData();
     router.mount(document.body);
 }
 
@@ -30,6 +50,7 @@ function RootPage(): FragmentItem {
             prefsRoute.Link({}, 'Preferences'),
             benchRoute.Link({}, 'Benchmark'),
             virtualRoute.Link({}, 'Virtual List'),
+            newsRoute.Link({}, 'News'),
             button('Print tree', {
                 onclick() {
                     console.log(dumpComponentTree(this.getRoot()));

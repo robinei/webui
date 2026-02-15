@@ -49,22 +49,22 @@ type Styles = {
 
 type PropertyAttributes<N> = {
     [K in keyof N as
-        K extends string ? (
-            K extends 'style' ? K :
-            N[K] extends (Function | null | undefined) ? never :
-            K extends WritableKeys<N> ? (N[K] extends Primitive ? K : never) :
-            never
-        ) : never
+    K extends string ? (
+        K extends 'style' ? K :
+        N[K] extends (Function | null | undefined) ? never :
+        K extends WritableKeys<N> ? (N[K] extends Primitive ? K : never) :
+        never
+    ) : never
     ]?: K extends 'style' ? Styles : Value<N[K]>;
 };
 
 type EventAttributes<N extends Node | null> = {
     [K in keyof N as
-        K extends string ? (
-            N[K] extends (Function | null | undefined) ?
-                (K extends `on${string}` ? K : never) :
-                never
-        ) : never
+    K extends string ? (
+        N[K] extends (Function | null | undefined) ?
+        (K extends `on${string}` ? K : never) :
+        never
+    ) : never
     ]?: RewriteThisParameter<N[K], N>;
 };
 
@@ -83,7 +83,7 @@ type RewriteThisParameter<F, N extends Node | null> =
 
 
 export class Context<T> {
-    constructor(readonly name: string) {}
+    constructor(readonly name: string) { }
 
     Consume(bodyFunc: (value: T) => FragmentItem): Component<null> {
         const context = this;
@@ -101,6 +101,7 @@ export class Context<T> {
 
 
 let forceValuePropagation = false;
+let insideUpdate = false;
 
 let mountedRootComponent: Component | null = null;
 let suppressingUpdates = false;
@@ -133,7 +134,7 @@ export class Component<out N extends Node | null = Node | null> {
 
     private contextValues?: Map<Context<unknown>, unknown>;
 
-    constructor(readonly node: N, private name?: string) {}
+    constructor(readonly node: N, private name?: string) { }
 
     getName(): string { return this.name ?? this.node?.nodeName ?? 'Component'; }
     setName(name: string): Component<N> {
@@ -159,7 +160,7 @@ export class Component<out N extends Node | null = Node | null> {
 
     injectError(error: unknown): void {
         let c: Component = this;
-        for (;;) {
+        for (; ;) {
             try {
                 if (c.errorHandler?.(error) === true) {
                     return;
@@ -196,7 +197,7 @@ export class Component<out N extends Node | null = Node | null> {
         this.suspenseHandler(this.suspenseCount ?? 0); // always invoke (even with 0), so the handler can ensure things start out according to the current count
         return this;
     }
-    
+
     provideContext<T>(context: Context<T>, value: T): Component<N> {
         if (!this.contextValues) {
             this.contextValues = new Map();
@@ -344,21 +345,21 @@ export class Component<out N extends Node | null = Node | null> {
 
             if (typeof value === 'function' && name.startsWith('on')) {
                 switch (name) {
-                case 'onupdate':
-                    this.addUpdateListener(value);
-                    break;
-                case 'onmount':
-                    this.addMountListener(value);
-                    break;
-                case 'onmounted':
-                    this.addMountedListener(value);
-                    break;
-                case 'onunmount':
-                    this.addUnmountListener(value);
-                    break;
-                default:
-                    this.addEventListener(name.substring(2) as any, value);
-                    break;
+                    case 'onupdate':
+                        this.addUpdateListener(value);
+                        break;
+                    case 'onmount':
+                        this.addMountListener(value);
+                        break;
+                    case 'onmounted':
+                        this.addMountedListener(value);
+                        break;
+                    case 'onunmount':
+                        this.addUnmountListener(value);
+                        break;
+                    default:
+                        this.addEventListener(name.substring(2) as any, value);
+                        break;
                 }
             } else if (name === 'style') {
                 this.setStyle(value as Styles);
@@ -443,7 +444,7 @@ export class Component<out N extends Node | null = Node | null> {
             // child component doesn't have a suspense handler and thus will spill its suspense count up to us.
             this.addSuspenseCount(child.suspenseCount);
         }
-        
+
         if (!child.detached) {
             let container = this.getChildContainerNode();
             if (container) {
@@ -482,7 +483,7 @@ export class Component<out N extends Node | null = Node | null> {
         child.prevSibling = undefined;
         child.nextSibling = undefined;
         child.parent = undefined;
-        
+
         if (!child.detached) {
             const container = this.getChildContainerNode();
             if (container) {
@@ -498,7 +499,7 @@ export class Component<out N extends Node | null = Node | null> {
         if (child.mounted) {
             child.unmount();
         }
-        
+
         return this;
     }
 
@@ -651,7 +652,7 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     clear(): Component<N> {
-        for (;;) {
+        for (; ;) {
             const child = this.firstChild;
             if (!child) {
                 break;
@@ -667,7 +668,7 @@ export class Component<out N extends Node | null = Node | null> {
         mountedRootComponent = this;
         return this;
     }
-    
+
     private signalMounted(components: Component[]): void {
         for (const component of components) {
             if (component.mountedListeners) {
@@ -685,7 +686,7 @@ export class Component<out N extends Node | null = Node | null> {
     private doMount(): Component[] {
         const pendingMountedCalls: Component[] = [];
         const stack: Component[] = [this];
-        for (;;) {
+        for (; ;) {
             const component = stack.pop();
             if (!component) {
                 break;
@@ -716,15 +717,12 @@ export class Component<out N extends Node | null = Node | null> {
                 stack.push(c);
             }
         }
-        
-        const prevForceValuePropagation = forceValuePropagation;
-        forceValuePropagation = true;
-        try {
-            this.update(); // immediately update a mounted tree
-        } finally {
-            forceValuePropagation = prevForceValuePropagation;
+
+        if (!insideUpdate) {
+            // immediately update a mounted tree (unless already inside update pass, which will reach the newly mounted nodes)
+            this.update();
         }
-        
+
         return pendingMountedCalls;
     }
 
@@ -733,7 +731,7 @@ export class Component<out N extends Node | null = Node | null> {
             throw new Error('can only explicitly unmount root components (not already inserted in a tree)');
         }
         const stack: Component[] = [this];
-        for (;;) {
+        for (; ;) {
             const component = stack.pop();
             if (!component) {
                 break;
@@ -764,39 +762,45 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     update(): Component<N> {
-        const stack: Component[] = [this];
-        for (;;) {
-            const component = stack.pop();
-            if (!component) {
-                break;
-            }
-            if (!component.mounted) {
-                break;
-            }
-            ++touchedComponents;
+        const wasInsideUpdate = insideUpdate;
+        insideUpdate = true;
+        try {
+            const stack: Component[] = [this];
+            for (; ;) {
+                const component = stack.pop();
+                if (!component) {
+                    break;
+                }
+                if (!component.mounted) {
+                    break;
+                }
+                ++touchedComponents;
 
-            if (component.updateListeners) {
-                let skipSubtree = false;
-                for (const listener of component.updateListeners) {
-                    updaterCount += 1;
-                    try {
-                        if (listener() === false) {
-                            skipSubtree = true;
+                if (component.updateListeners) {
+                    let skipSubtree = false;
+                    for (const listener of component.updateListeners) {
+                        updaterCount += 1;
+                        try {
+                            if (listener() === false) {
+                                skipSubtree = true;
+                            }
+                        } catch (e) {
+                            component.injectError(e);
                         }
-                    } catch (e) {
-                        component.injectError(e);
+                    }
+                    if (skipSubtree) {
+                        continue;
                     }
                 }
-                if (skipSubtree) {
-                    continue;
-                }
-            }
 
-            for (let c = component.lastChild; c; c = c.prevSibling) {
-                if (c.updateListeners || c.firstChild) {
-                    stack.push(c);
+                for (let c = component.lastChild; c; c = c.prevSibling) {
+                    if (c.updateListeners || c.firstChild) {
+                        stack.push(c);
+                    }
                 }
             }
+        } finally {
+            insideUpdate = wasInsideUpdate;
         }
         return this;
     }
@@ -941,7 +945,7 @@ export class Component<out N extends Node | null = Node | null> {
             }
         }
     }
-    
+
     updateRoot(): void {
         if (!this.mounted) {
             return;
@@ -986,39 +990,39 @@ function setElementAttribute(elem: Element, name: string, value: Primitive): voi
     }
 }
 
-        
+
 function visitFragment(fragment: FragmentItem, text: string, handler: (component: Component) => void): string {
     if (fragment === null) {
         return text;
     }
     switch (typeof fragment) {
-    case 'boolean':
-    case 'number':
-    case 'string':
-        text += fragment.toString();
-    case 'undefined':
-        return text;
-    case 'function':
-        if (text) {
-            handler(StaticText(text));
-        }
-        handler(DynamicText(fragment));
-        return '';
-    default:
-        if (fragment instanceof Component) {
+        case 'boolean':
+        case 'number':
+        case 'string':
+            text += fragment.toString();
+        case 'undefined':
+            return text;
+        case 'function':
             if (text) {
                 handler(StaticText(text));
             }
-            handler(fragment);
+            handler(DynamicText(fragment));
             return '';
-        } else if (Array.isArray(fragment)) {
-            for (const item of fragment) {
-                text = visitFragment(item, text, handler);
+        default:
+            if (fragment instanceof Component) {
+                if (text) {
+                    handler(StaticText(text));
+                }
+                handler(fragment);
+                return '';
+            } else if (Array.isArray(fragment)) {
+                for (const item of fragment) {
+                    text = visitFragment(item, text, handler);
+                }
+                return text;
+            } else {
+                throw new Error(`unexpected fragment object: ${fragment}`);
             }
-            return text;
-        } else {
-            throw new Error(`unexpected fragment object: ${fragment}`);
-        }
     }
 }
 
@@ -1071,8 +1075,8 @@ export const HTML = new Proxy({}, {
         }
     }
 }) as {
-    [Tag in keyof HTMLElementTagNameMap]: HTMLComponentConstructor<Tag>;
-};
+        [Tag in keyof HTMLElementTagNameMap]: HTMLComponentConstructor<Tag>;
+    };
 
 export type HTMLChildFragment<T extends HTMLElement> = FragmentItem | Attributes<T>;
 
@@ -1253,7 +1257,7 @@ export function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: Fragme
     if (bodyComponents.length === 0) {
         return new Component(null, 'Suspense');
     }
-    
+
     const fallbackComponents = flattenFragment(fallbackFragment);
     for (const c of fallbackComponents) {
         c.setSuspenseHandler(function fallbackSuspenseGuard(count) {
@@ -1262,7 +1266,7 @@ export function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: Fragme
             }
         });
     }
-    
+
     return new Component(null, 'Suspense').appendChildren(bodyComponents).setSuspenseHandler(function suspenseHandler(count) {
         if (count > 0) {
             if (!bodyComponents[0]!.isDetached()) {
@@ -1376,15 +1380,15 @@ export function VirtualList<T extends object>(opts: VirtualListOptions<T>): Comp
     }
     container.appendChild(spacer);
 
-    container.addEventListener('scroll', function() {
+    container.addEventListener('scroll', function () {
         ++reconcileGeneration;
         reconcile();
     });
     container.addUpdateListener(reconcile);
-    container.addMountedListener(function() {
+    container.addMountedListener(function () {
         requestAnimationFrame(reconcile);
     });
-    container.addUnmountListener(function() {
+    container.addUnmountListener(function () {
         observer.disconnect();
     });
 
@@ -1489,6 +1493,28 @@ export function VirtualList<T extends object>(opts: VirtualListOptions<T>): Comp
 }
 
 
+// Store hydration
+
+let _storeHydrationData: Record<string, unknown> | null = null;
+
+export function setStoreHydrationData(data: Record<string, unknown>) {
+    _storeHydrationData = data;
+}
+
+export function hasStoreHydrationData(): boolean {
+    return _storeHydrationData !== null;
+}
+
+export function readEmbeddedStoreData(): void {
+    if (typeof document === 'undefined') return;
+    const el = document.getElementById('__STORE_DATA__');
+    if (el) {
+        _storeHydrationData = JSON.parse(el.textContent!);
+        el.remove();
+    }
+}
+
+
 // Store system
 
 export type DeepReadonly<T> =
@@ -1501,8 +1527,8 @@ export type DeepReadonly<T> =
 
 export type StoreView<T extends Store> = {
     readonly [K in keyof T as K extends keyof Store ? never : K]:
-        T[K] extends (...args: infer A) => infer R ? (...args: A) => R :
-        DeepReadonly<T[K]>
+    T[K] extends (...args: infer A) => infer R ? (...args: A) => R :
+    DeepReadonly<T[K]>
 } & {
     derived<R>(selector: (self: StoreView<T>) => R): () => R;
     provide(component: Component): StoreView<T>;
@@ -1535,7 +1561,7 @@ export class Store {
                 // Wrap method as action: auto-increment generation + trigger update
                 const method = desc.value;
                 const self = this;
-                (this as any)[key] = function(...args: any[]) {
+                (this as any)[key] = function (...args: any[]) {
                     const wasDispatching = self._dispatching;
                     self._dispatching = true;
                     try {
@@ -1566,6 +1592,7 @@ export class Store {
                 });
             }
         }
+
     }
 
     derived<R>(selector: (self: this) => R): () => R {
@@ -1595,6 +1622,15 @@ export class Store {
     }
 
     static create<T extends Store>(this: new () => T): StoreView<T> {
-        return new this() as StoreView<T>;
+        const instance = new this();
+        const hydrationKey = instance.constructor.name;
+        if (_storeHydrationData && hydrationKey in _storeHydrationData) {
+            Object.assign(instance, _storeHydrationData[hydrationKey] as object);
+            delete _storeHydrationData[hydrationKey];
+            if (Object.keys(_storeHydrationData).length === 0) {
+                _storeHydrationData = null;
+            }
+        }
+        return instance as StoreView<T>;
     }
 }
