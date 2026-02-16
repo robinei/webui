@@ -113,6 +113,7 @@ function triggerAppUpdate() {
 
 export class Component<out N extends Node | null = Node | null> {
     private parent?: Component;
+    private pendingParent?: Component;
     private firstChild?: Component;
     private lastChild?: Component;
     private nextSibling?: Component;
@@ -206,7 +207,7 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     getContext<T>(context: Context<T>): T {
-        for (let c: Component | undefined = this; c; c = c.parent) {
+        for (let c: Component | undefined = this; c; c = c.parent ?? c.pendingParent) {
             if (c.contextValues) {
                 const value = c.contextValues.get(context);
                 if (value !== undefined) {
@@ -406,10 +407,14 @@ export class Component<out N extends Node | null = Node | null> {
             throw new Error('component is already attached to a component');
         }
 
+        child.pendingParent = this;
+
         let pendingMountedCalls: Component[] | undefined;
         if (this.mounted && !child.mounted) {
             pendingMountedCalls = child.doMount();
         }
+
+        child.pendingParent = undefined;
 
         if (before) {
             if (before.parent !== this) {
