@@ -35,6 +35,11 @@ export const newsPostRoute = newsRoute.subRoute('/id:number',
     }
 );
 
+export const testsRoute = router.subRoute('/tests',
+    async () => (await import('./pages/tests')).TestsPage(),
+    { transient: true, importPath: './pages/tests' }
+);
+
 if (typeof document !== 'undefined') {
     readEmbeddedStoreData();
     router.mount(document.body);
@@ -51,6 +56,7 @@ function RootPage(): FragmentItem {
             benchRoute.Link({}, 'Benchmark'),
             virtualRoute.Link({}, 'Virtual List'),
             newsRoute.Link({}, 'News'),
+            testsRoute.Link({}, 'Tests'),
             button('Print tree', {
                 onclick() {
                     console.log(dumpComponentTree(this.getRoot()));
