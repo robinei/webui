@@ -1,5 +1,5 @@
 import { Component, HTML, StaticText, DynamicText, flattenFragment } from '../../core';
-import { TestSuite, withContainer, assert, assertEqual, assertThrows } from './runner';
+import { type TestSuite, withContainer, assert, assertEqual, assertThrows } from './runner';
 
 const { div, span, p } = HTML;
 
@@ -239,9 +239,9 @@ export const componentTreeSuite: TestSuite = {
                     parent.appendFragment(['a', [span('b'), ['c']]]);
                     const children = parent.getChildren();
                     assertEqual(children.length, 3);
-                    assertEqual((children[0].node as Text).nodeValue, 'a');
-                    assert(children[1].node instanceof HTMLSpanElement);
-                    assertEqual((children[2].node as Text).nodeValue, 'c');
+                    assertEqual((children[0]!.node as Text).nodeValue, 'a');
+                    assert(children[1]!.node instanceof HTMLSpanElement);
+                    assertEqual((children[2]!.node as Text).nodeValue, 'c');
                 });
             },
         },

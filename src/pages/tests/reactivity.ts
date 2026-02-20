@@ -1,7 +1,7 @@
-import { Component, HTML, DynamicText, StaticText } from '../../core';
-import { TestSuite, withContainer, assert, assertEqual } from './runner';
+import { HTML, DynamicText } from '../../core';
+import { type TestSuite, withContainer, assertEqual } from './runner';
 
-const { div, span, button } = HTML;
+const { div, button } = HTML;
 
 export const reactivitySuite: TestSuite = {
     name: 'Reactivity',

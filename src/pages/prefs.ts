@@ -1,4 +1,4 @@
-import { FragmentItem, HTML, For, Component } from '../core';
+import { type FragmentItem, HTML, For } from '../core';
 import { Outlet } from '../routing';
 import { prefsRoute, editPrefRoute } from '..';
 
@@ -54,13 +54,13 @@ export function PreferencesListPage(): FragmentItem {
                 ': ',
                 () => pref().value,
                 ' ',
-                editPrefRoute.Link({name: pref().name}, 'edit'),
+                editPrefRoute.Link({ name: pref().name }, 'edit'),
             );
         })
     );
 }
 
-export function EditPreferencePage({name}: { name(): string }): FragmentItem {
+export function EditPreferencePage({ name }: { name(): string }): FragmentItem {
     const textInput = input({
         value: () => getPreference(preferences, name()),
         oninput() {
@@ -82,9 +82,9 @@ export function EditPreferencePage({name}: { name(): string }): FragmentItem {
         textInput,
         prefsRoute.Link({}, 'done'),
         br(),
-        editPrefRoute.Link({name: 'password'}, 'password'),
+        editPrefRoute.Link({ name: 'password' }, 'password'),
         br(),
-        editPrefRoute.Link({name: 'username'}, 'username'),
+        editPrefRoute.Link({ name: 'username' }, 'username'),
     ).addMountListener(() => {
         console.log('MOUNT');
     }).addUnmountListener(() => {

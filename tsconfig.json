@@ -1,20 +1,32 @@
 {
     "compilerOptions": {
-        "module": "esnext",
+        // Environment setup & latest features
+        "lib": [
+            "esnext",
+            "ES2015.Core",
+            "DOM"
+        ],
         "target": "esnext",
-        "lib": ["esnext", "ES2015.Core", "DOM"],
-
+        "module": "preserve",
+        "moduleDetection": "force",
+        "jsx": "react-jsx",
+        "allowJs": true,
+        // Bundler mode
         "moduleResolution": "bundler",
         "allowImportingTsExtensions": true,
-        "moduleDetection": "force",
+        "verbatimModuleSyntax": true,
         "noEmit": true,
-
+        // Best practices
         "strict": true,
+        "skipLibCheck": true,
+        "noFallthroughCasesInSwitch": true,
+        "noUncheckedIndexedAccess": true,
+        "noImplicitOverride": true,
         "noImplicitReturns": true,
         "forceConsistentCasingInFileNames": true,
-        "skipLibCheck": true,
-        
         "sourceMap": true,
-        "rootDirs": ["src"]
+        "rootDirs": [
+            "src"
+        ]
     }
 }

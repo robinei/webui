@@ -1,4 +1,4 @@
-import { Store, HTML, For, FragmentItem, Suspense, fields, When } from '../core';
+import { Store, HTML, For, type FragmentItem, Suspense, With, When, type DeepReadonly } from '../core';
 import { Outlet } from '../routing';
 import { css } from '../css';
 import { newsRoute, newsPostRoute } from '..';
@@ -24,6 +24,15 @@ interface HNComment {
     children: HNComment[];
 }
 
+interface HNPost {
+    title: string;
+    url: string | null;
+    author: string;
+    points: number;
+    created_at: string;
+    children: HNComment[];
+}
+
 class NewsStore extends Store {
     items: HNHit[] = [];
 
@@ -34,13 +43,31 @@ class NewsStore extends Store {
     }
 }
 
-class PostStore extends Store {
+class PostStore extends Store implements HNPost {
     title = '';
     url: string | null = null;
     author = '';
     points = 0;
     created_at = '';
     children: HNComment[] = [];
+
+    clear() {
+        this.title = '';
+        this.url = null;
+        this.author = '';
+        this.points = 0;
+        this.created_at = '';
+        this.children = [];
+    }
+
+    apply(data: HNPost) {
+        Object.assign(this, data);
+    }
+}
+
+async function fetchPost(id: number) {
+    const res = await fetch(`https://hn.algolia.com/api/v1/items/${id}`);
+    return res.json() as Promise<HNPost>;
 }
 
 export async function initStores(): Promise<Record<string, unknown>> {
@@ -50,9 +77,8 @@ export async function initStores(): Promise<Record<string, unknown>> {
 }
 
 export async function initPostStores(id: number): Promise<Record<string, unknown>> {
-    const res = await fetch(`https://hn.algolia.com/api/v1/items/${id}`);
-    const data = await res.json();
-    return { PostStore: { title: data.title, url: data.url, author: data.author, points: data.points, created_at: data.created_at, children: data.children } };
+    const data = await fetchPost(id);
+    return { PostStore: data };
 }
 
 const s = css({
@@ -167,7 +193,7 @@ export function NewsListPage(): FragmentItem {
                     ' | ',
                     span(() => item().author),
                     ' | ',
-                    newsPostRoute.Link({ id: Number(item().objectID) } as any, span({
+                    newsPostRoute.Link({ id: Number(item().objectID) }, span({
                         className: s.commentsLink,
                     }, () => `${item().num_comments} comments`)),
                     ' | ',
@@ -182,15 +208,16 @@ export function NewsListPage(): FragmentItem {
 export function NewsPostPage({ id }: { id(): number }): FragmentItem {
     const store = PostStore.create();
 
-    function Comment(getComment: () => HNComment): FragmentItem {
-        const { author, text, children } = fields(getComment);
-        const deleted = () => !author() && !text();
-        return div({ className: s.comment },
-            When(deleted, span({ className: s.deleted }, '[deleted]')),
-            When(() => !deleted() && !!author(), span({ className: s.commentAuthor }, author)),
-            When(() => !!text(), div({ className: s.commentText, innerHTML: text })),
-            For(children, child => Comment(child), child => child.id),
-        );
+    function Comment(comment: () => DeepReadonly<HNComment>): FragmentItem {
+        return With(comment, c => div({ className: s.comment },
+            !c.author && !c.text
+                ? span({ className: s.deleted }, '[deleted]')
+                : [
+                    c.author ? span({ className: s.commentAuthor }, c.author) : [],
+                    c.text ? div({ className: s.commentText, innerHTML: c.text }) : [],
+                ],
+            For(() => c.children, child => Comment(child), child => child.id),
+        ), 'Comment');
     }
 
     return div(
@@ -210,5 +237,9 @@ export function NewsPostPage({ id }: { id(): number }): FragmentItem {
             child => Comment(child),
             child => child.id,
         ),
-    );
+    ).addValueLoader(id, async function loadPost(newId) {
+        store.clear();
+        const data = await fetchPost(newId);
+        return () => store.apply(data);
+    });
 }

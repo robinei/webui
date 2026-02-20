@@ -1,4 +1,4 @@
-import { Component, Context, FragmentItem, HTML, HTMLChildFragment, hasStoreHydrationData, setStoreHydrationData } from './core';
+import { Component, Context, type FragmentItem, HTML, type HTMLChildFragment, hasStoreHydrationData, setStoreHydrationData } from './core';
 import { deepEqual } from './util';
 
 const { a } = HTML;
@@ -6,23 +6,23 @@ const { a } = HTML;
 
 type ParseUrlSpec<P extends string> =
     P extends `${infer Prefix extends string}/${infer Rest extends string}`
-        ? ParseUrlSpecTypedKey<Prefix> & ParseUrlSpec<Rest>
-        : ParseUrlSpecSuffix<P>;
+    ? ParseUrlSpecTypedKey<Prefix> & ParseUrlSpec<Rest>
+    : ParseUrlSpecSuffix<P>;
 
 type ParseUrlSpecSuffix<S extends string> =
     S extends `${infer Prefix extends string}?${infer Query extends string}`
-        ? ParseUrlSpecTypedKey<Prefix> & Partial<ParseUrlSpecQuery<Query>>
-        : ParseUrlSpecTypedKey<S>;
+    ? ParseUrlSpecTypedKey<Prefix> & Partial<ParseUrlSpecQuery<Query>>
+    : ParseUrlSpecTypedKey<S>;
 
 type ParseUrlSpecQuery<Q extends string> =
     Q extends `${infer Prefix extends string}&${infer Rest extends string}`
-        ? ParseUrlSpecTypedKey<Prefix> & ParseUrlSpecQuery<Rest>
-        : ParseUrlSpecTypedKey<Q>;
+    ? ParseUrlSpecTypedKey<Prefix> & ParseUrlSpecQuery<Rest>
+    : ParseUrlSpecTypedKey<Q>;
 
 type ParseUrlSpecTypedKey<S extends string> =
     S extends `${infer Key extends string}:${infer Type extends string}`
-        ? { [_ in Key]: ParseUrlSpecType<Type> }
-        : {};
+    ? { [_ in Key]: ParseUrlSpecType<Type> }
+    : {};
 
 type ParseUrlSpecType<S extends string> =
     S extends 'string' ? string :
@@ -180,20 +180,20 @@ function runParseUrlSpecTests() {
     runTest('/', '/', '', {});
     runTest('/', '/foo', 'foo', {});
     runTest('/foo', '/foo', '', {});
-    runTest('/foo:number', '/123', '', {foo: 123});
+    runTest('/foo:number', '/123', '', { foo: 123 });
     runTest('/foo:number', '/nan', false, {});
-    runTest('/foo:number/bar:string', '/123/str', '', {foo: 123, bar: 'str'});
-    runTest('/prefix/foo:number/bar:string', '/prefix/123/str', '', {foo: 123, bar: 'str'});
-    runTest('/foo?b:boolean&n:number&s:string', '/foo?b=true&n=123&s=bar', '', {b:true, n:123, s:'bar'});
-    runTest('/foo?b:boolean&n:number&s:string', '/foo?b=true', '', {b:true});
-    runTest('/foo?b:boolean&n:number&s:string', '/foo?b&n&s', '', {b:true, n:0, s:''});
+    runTest('/foo:number/bar:string', '/123/str', '', { foo: 123, bar: 'str' });
+    runTest('/prefix/foo:number/bar:string', '/prefix/123/str', '', { foo: 123, bar: 'str' });
+    runTest('/foo?b:boolean&n:number&s:string', '/foo?b=true&n=123&s=bar', '', { b: true, n: 123, s: 'bar' });
+    runTest('/foo?b:boolean&n:number&s:string', '/foo?b=true', '', { b: true });
+    runTest('/foo?b:boolean&n:number&s:string', '/foo?b&n&s', '', { b: true, n: 0, s: '' });
     runTest('/foo/b:boolean', '/foo/', false, {});
     runTest('/foo/n:number', '/foo/', false, {});
     runTest('/foo/s:string', '/foo/', false, {});
     runTest('/', '', '', {});
-    runTest('/?arg:number', '?arg=123', '', {arg:123});
+    runTest('/?arg:number', '?arg=123', '', { arg: 123 });
     runTest('/foo/', '/foo', '', {});
-    runTest('/foo/?arg:number', '/foo?arg=123', '', {arg:123});
+    runTest('/foo/?arg:number', '/foo?arg=123', '', { arg: 123 });
 
     function runTest(spec: string, url: string, expectedResult: string | false, expectedArgs: { [key: string]: unknown }): void {
         const matcher = parseUrlSpec(spec);
@@ -216,7 +216,7 @@ export function Outlet() {
         const route = component.getContext(RouteContext);
         (route as any).setOutlet(component);
     });
-    
+
     return component;
 }
 
@@ -359,7 +359,7 @@ export class Route<Args> {
         if (restOfUrl === false) {
             return false;
         }
-        
+
         this.args = args;
 
         for (const route of this.subRoutes) {

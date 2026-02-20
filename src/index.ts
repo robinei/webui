@@ -1,4 +1,4 @@
-import { Component, FragmentItem, HTML, Suspense, readEmbeddedStoreData } from './core';
+import { Component, type FragmentItem, HTML, Suspense, readEmbeddedStoreData } from './core';
 import { Router, Outlet } from './routing';
 
 const { nav, main, button } = HTML;

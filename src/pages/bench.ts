@@ -1,5 +1,5 @@
 
-import { FragmentItem, HTML, Lazy, Unsuspense } from '../core';
+import { type FragmentItem, HTML, Lazy, Unsuspense } from '../core';
 import { asyncDelay, Semaphore } from '../util';
 
 function benchmark(iters: number, func: () => void): number {
@@ -58,10 +58,10 @@ export function BenchmarkPage(): FragmentItem {
         hr(),
         h5('Variable argument passing'),
         Benchmark('Rest', argIters, () => {
-            testRest(1,2,3,4,5,6,7,8,9);
+            testRest(1, 2, 3, 4, 5, 6, 7, 8, 9);
         }),
         Benchmark('Arguments', argIters, () => {
-            testArguments(1,2,3,4,5,6,7,8,9);
+            testArguments(1, 2, 3, 4, 5, 6, 7, 8, 9);
         }),
     ));
 }
@@ -71,7 +71,7 @@ function testArguments(foo: number, ...numbers: number[]): number;
 function testArguments() {
     var sum = 0;
     for (var i = 1; i < arguments.length; ++i) {
-      sum += arguments[i];
+        sum += arguments[i];
     }
     return sum;
 }
@@ -80,7 +80,7 @@ function testArguments() {
 function testRest(foo: number, ...numbers: number[]) {
     var sum = 0;
     for (var i = 1; i < numbers.length; ++i) {
-      sum += numbers[i]!;
+        sum += numbers[i]!;
     }
     return sum;
 }

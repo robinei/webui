@@ -1,4 +1,4 @@
-import { Store, FragmentItem, HTML, If, For, Lazy, When } from '../core';
+import { Store, type FragmentItem, HTML, If, For, Lazy, When } from '../core';
 
 const { div, input, button, span, h4 } = HTML;
 

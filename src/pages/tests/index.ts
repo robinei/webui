@@ -1,11 +1,12 @@
-import { FragmentItem, HTML, If, When, For } from '../../core';
+import { type FragmentItem, HTML, If, When, For } from '../../core';
 import { css } from '../../css';
-import { TestSuite, SuiteResult, runSuite, setTestContainer } from './runner';
+import { type TestSuite, type SuiteResult, runSuite, setTestContainer } from './runner';
 import { componentTreeSuite } from './component-tree';
 import { reactivitySuite } from './reactivity';
 import { controlFlowSuite } from './control-flow';
 import { lifecycleSuite } from './lifecycle';
 import { contextErrorsSuite } from './context-errors';
+import { utilSuite } from './util';
 
 const { div, span, button, h2, h3, pre } = HTML;
 
@@ -154,6 +155,7 @@ const allSuites: TestSuite[] = [
     controlFlowSuite,
     lifecycleSuite,
     contextErrorsSuite,
+    utilSuite,
 ];
 
 export function TestsPage(): FragmentItem {

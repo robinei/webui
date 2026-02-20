@@ -29,7 +29,7 @@ export function css<T extends StyleSheet>(sheet: T): CssResult<T> {
             let inner = '';
             const blocks = sheet[name] as { [stop: string]: StyleProperties };
             for (const stop in blocks) {
-                inner += compileRule(stop, blocks[stop], keyframes);
+                inner += compileRule(stop, blocks[stop]!, keyframes);
             }
             rules += `@keyframes ${classMap[kfName]}{${inner}}`;
         } else if (name[0] === '@') {
@@ -38,7 +38,7 @@ export function css<T extends StyleSheet>(sheet: T): CssResult<T> {
             const block = sheet[name] as { [name: string]: StyleProperties };
             for (const innerName in block) {
                 if (!(innerName in classMap)) classMap[innerName] = `${innerName}-${hash}`;
-                inner += compileRule(`.${classMap[innerName]}`, block[innerName], keyframes);
+                inner += compileRule(`.${classMap[innerName]}`, block[innerName]!, keyframes);
             }
             rules += `${name}{${inner}}`;
         } else {
@@ -61,7 +61,7 @@ function compileRule(selector: string, props: StyleProperties, keyframes: Map<st
     let declarations = '';
     let nested = '';
     for (const key in props) {
-        const value = props[key];
+        const value = props[key]!;
         if (typeof value === 'string') {
             const resolved = keyframes.size > 0 && (key === 'animation' || key === 'animationName')
                 ? replaceKeyframeRefs(value, keyframes) : value;

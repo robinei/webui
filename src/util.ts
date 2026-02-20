@@ -149,26 +149,6 @@ export function objectsEqual(a: { [key: string]: unknown }, b: { [key: string]: 
     return true;
 }
 
-function runDeepEqualTests() {
-    console.assert(deepEqual(1, 1));
-    console.assert(!deepEqual(1, 2));
-    console.assert(deepEqual('a', 'a'));
-    console.assert(!deepEqual('a', 'b'));
-    console.assert(!deepEqual('a', 1));
-    console.assert(deepEqual([1], [1]));
-    console.assert(!deepEqual([1], [2]));
-    console.assert(!deepEqual([1], [1,2]));
-    console.assert(deepEqual({a: 1}, {a: 1}));
-    console.assert(!deepEqual({a: 1}, {a: 2}));
-    console.assert(deepEqual({a: [1]}, {a: [1]}));
-    console.assert(!deepEqual({a: [1]}, {a: [2]}));
-    console.assert(!deepEqual({a: [1]}, {b: [1]}));
-    console.assert(!deepEqual({a: [1]}, {a: [1], b: 2}));
-    console.assert(!deepEqual({a: [1], b: 2}, {a: [1]}));
-    console.assert(deepEqual({a: [1], b: 2}, {a: [1], b: 2}));
-}
-runDeepEqualTests();
-
 
 
 
@@ -257,42 +237,6 @@ export function tvForEach<T>(vec: ThinVec<T>, func: (value: T) => void | boolean
     }
 }
 
-function tvRunTests() {
-    let vec: ThinVec<number>;
-
-    vec = tvPush(vec, 0);
-    vec = tvPush(vec, 1);
-    vec = tvPush(vec, 2);
-    console.assert(tvLength(vec) === 3);
-    console.assert(tvLast(vec) === 2);
-    vec = tvRemove(vec, 2);
-    console.assert(tvLength(vec) === 2);
-    console.assert(tvLast(vec) === 1);
-    vec = tvRemove(vec, 1);
-    console.assert(tvLength(vec) === 1);
-    console.assert(tvLast(vec) === 0);
-    vec = tvRemove(vec, 0);
-    console.assert(tvLength(vec) === 0);
-    console.assert(tvLast(vec) === undefined);
-    
-    vec = tvPush(vec, 0);
-    vec = tvPush(vec, 1);
-    vec = tvPush(vec, 2);
-    console.assert(tvLength(vec) === 3);
-    console.assert(tvLast(vec) === 2);
-    vec = tvPop(vec);
-    console.assert(tvLength(vec) === 2);
-    console.assert(tvLast(vec) === 1);
-    vec = tvPop(vec);
-    console.assert(tvLength(vec) === 1);
-    console.assert(tvLast(vec) === 0);
-    vec = tvPop(vec);
-    console.assert(tvLength(vec) === 0);
-    console.assert(tvLast(vec) === undefined);
-}
-
-tvRunTests();
-
 
 
 
@@ -339,32 +283,6 @@ export function longestIncreasingSubsequence(arr: number[]): number[] {
     }
     return result;
 }
-
-function runLISTests() {
-    // Empty
-    console.assert(arraysEqual(longestIncreasingSubsequence([]), []));
-    // Single element
-    console.assert(arraysEqual(longestIncreasingSubsequence([5]), [0]));
-    // Already sorted
-    console.assert(arraysEqual(longestIncreasingSubsequence([1, 2, 3, 4]), [0, 1, 2, 3]));
-    // Reversed — LIS length 1
-    console.assert(longestIncreasingSubsequence([4, 3, 2, 1]).length === 1);
-    // Mixed — [1, 3, 4] is the LIS (indices 0, 1, 2)
-    const lis1 = longestIncreasingSubsequence([1, 3, 4, 0, 2]);
-    console.assert(lis1.length === 3);
-    console.assert(lis1[0]! < lis1[1]! && lis1[1]! < lis1[2]!); // indices are increasing
-    for (let i = 1; i < lis1.length; i++) {
-        console.assert([1, 3, 4, 0, 2][lis1[i]!]! > [1, 3, 4, 0, 2][lis1[i - 1]!]!); // values are increasing
-    }
-    // [3, 1, 4, 1, 5, 9, 2, 6] — LIS length 4 (e.g. 3,4,5,9 or 1,4,5,6)
-    console.assert(longestIncreasingSubsequence([3, 1, 4, 1, 5, 9, 2, 6]).length === 4);
-    // Duplicates — strictly increasing, so duplicates don't extend
-    console.assert(longestIncreasingSubsequence([2, 2, 2, 2]).length === 1);
-    // Two interleaved sequences
-    console.assert(longestIncreasingSubsequence([0, 8, 1, 9, 2, 10, 3]).length === 4); // 0,1,2,3
-}
-
-runLISTests();
 
 
 export function createDirtyTracker() {

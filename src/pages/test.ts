@@ -1,6 +1,6 @@
 import { errorDescription, asyncDelay } from '../util';
 import {
-    FragmentItem,
+    type FragmentItem,
     HTML, If, Repeat, Unsuspense, ErrorBoundary, Lazy, Async, Match, Else, Component
 } from '../core';
 import { css } from '../css';

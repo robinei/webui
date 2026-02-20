@@ -1,5 +1,5 @@
-import { Component, Context, HTML, ErrorBoundary } from '../../core';
-import { TestSuite, withContainer, assert, assertEqual, assertThrows } from './runner';
+import { Context, HTML, ErrorBoundary } from '../../core';
+import { type TestSuite, withContainer, assert, assertEqual, assertThrows } from './runner';
 
 const { div, span } = HTML;
 

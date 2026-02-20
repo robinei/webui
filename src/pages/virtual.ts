@@ -1,4 +1,4 @@
-import { FragmentItem, HTML, VirtualList } from '../core';
+import { type FragmentItem, HTML, VirtualList } from '../core';
 
 const { div, h4, span } = HTML;
 
@@ -22,7 +22,7 @@ export function VirtualListPage(): FragmentItem {
         items.push({
             id: i,
             name: `Item ${i}`,
-            description: descriptions[i % 3],
+            description: descriptions[i % 3]!,
             value: Math.floor(Math.random() * 1000),
         });
     }

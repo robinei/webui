@@ -97,7 +97,7 @@ export function withContainer(fn: (container: Component<HTMLDivElement>) => void
 }
 
 export function createContainer(): Component<HTMLDivElement> {
-    const c = div() as Component<HTMLDivElement>;
+    const c = div();
     testContainer.appendChild(c);
     return c;
 }

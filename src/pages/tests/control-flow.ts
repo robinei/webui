@@ -1,5 +1,5 @@
-import { Component, HTML, If, When, Unless, Match, Else, For, Repeat } from '../../core';
-import { TestSuite, withContainer, assert, assertEqual } from './runner';
+import { HTML, If, When, Unless, Match, Else, For, Repeat } from '../../core';
+import { type TestSuite, withContainer, assertEqual } from './runner';
 
 const { div, span } = HTML;
 

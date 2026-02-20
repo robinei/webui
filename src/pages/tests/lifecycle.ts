@@ -1,5 +1,5 @@
-import { Component, HTML } from '../../core';
-import { TestSuite, withContainer, assert, assertEqual } from './runner';
+import { HTML } from '../../core';
+import { type TestSuite, withContainer, assert, assertEqual } from './runner';
 
 const { div, span } = HTML;
 
