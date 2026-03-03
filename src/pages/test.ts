@@ -1,7 +1,7 @@
 import { errorDescription, asyncDelay } from '../util';
 import {
     type FragmentItem,
-    HTML, If, Repeat, Unsuspense, ErrorBoundary, Lazy, Async, Match, Else, Component
+    HTML, If, Repeat, Unsuspense, ErrorBoundary, Lazy, Async, Match, Else, Component, Portal, When
 } from '../core';
 import { css } from '../css';
 
@@ -51,6 +51,8 @@ export function TestPage(): FragmentItem {
         let highlight = false;
 
         return [
+            PortalDemo(),
+
             div({ className: styles.styledBox },
                 span({ className: styles.styledTitle }, 'css() demo'),
                 span(' — scoped class-based styles '),
@@ -133,6 +135,65 @@ export function TestPage(): FragmentItem {
             return [cb, () => cb.node.checked];
         }
     });
+}
+
+const modalStyles = css({
+    overlay: {
+        position: 'fixed',
+        inset: '0',
+        background: 'rgba(0,0,0,0.6)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: '1000',
+    },
+    modal: {
+        background: '#1e293b',
+        border: '1px solid #3b82f6',
+        borderRadius: '10px',
+        padding: '24px 32px',
+        minWidth: '260px',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+    },
+    title: {
+        fontWeight: 'bold',
+        fontSize: '16px',
+        marginBottom: '12px',
+        color: '#60a5fa',
+    },
+});
+
+function PortalDemo(): FragmentItem {
+    let open = false;
+    let count = 0;
+
+    return [
+        div({ style: { marginBottom: '12px' } },
+            span({ style: { fontWeight: 'bold', color: '#60a5fa', fontSize: '14px' } }, 'Portal demo'),
+            span(' — modal rendered into document.body'),
+            br(),
+            button('Open modal', { onclick() { open = true; } }),
+        ),
+        When(() => open,
+            Portal(document.body,
+                div({
+                    className: modalStyles.overlay,
+                    onclick() { open = false; }
+                }),
+                div({
+                    className: modalStyles.modal,
+                    style: { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', zIndex: '1001' },
+                    onclick(ev) { ev.stopPropagation(); }
+                },
+                    div({ className: modalStyles.title }, 'Portal modal (two top-level children)'),
+                    p('Count: ', () => count),
+                    button('Increment', { onclick() { count++; } }),
+                    ' ',
+                    button('Close', { onclick() { open = false; } }),
+                ),
+            ),
+        ),
+    ];
 }
 
 function ErrorFallback(error: unknown, reset: () => void): FragmentItem {

@@ -103,15 +103,6 @@ export class Context<T> {
 let updateDepth = 0;
 let pendingUpdateRoot: Component | null = null;
 
-function commonAncestor(a: Component, b: Component): Component {
-    let da = 0, db = 0;
-    for (let c: Component | undefined = a; c; c = c.parent) da++;
-    for (let c: Component | undefined = b; c; c = c.parent) db++;
-    while (da > db) { a = a.parent!; da--; }
-    while (db > da) { b = b.parent!; db--; }
-    while (a !== b)  { a = a.parent!; b = b.parent!; }
-    return a;
-}
 
 let mountedRootComponent: Component | null = null;
 let suppressingUpdates = false;
@@ -189,6 +180,17 @@ export class Component<out N extends Node | null = Node | null> {
         let c: Component = this;
         while (c.parent) { c = c.parent; }
         return c;
+    }
+
+    private commonAncestor(b: Component): Component {
+        let a: Component = this;
+        let da = 0, db = 0;
+        for (let c: Component | undefined = a; c; c = c.parent) da++;
+        for (let c: Component | undefined = b; c; c = c.parent) db++;
+        while (da > db) { a = a.parent!; da--; }
+        while (db > da) { b = b.parent!; db--; }
+        while (a !== b) { a = a.parent!; b = b.parent!; }
+        return a;
     }
 
     injectError(error: unknown): void {
@@ -828,7 +830,7 @@ export class Component<out N extends Node | null = Node | null> {
     update(): Component<N> {
         if (updateDepth > 0) {
             pendingUpdateRoot = pendingUpdateRoot
-                ? commonAncestor(pendingUpdateRoot, this)
+                ? this.commonAncestor(pendingUpdateRoot)
                 : this;
             return this;
         }
@@ -939,13 +941,36 @@ export class Component<out N extends Node | null = Node | null> {
         const node = this.node;
         if (node) {
             if (!node.parentNode) {
+                // Normal case: node not yet in the DOM, insert it.
                 container.insertBefore(node, beforeNode);
-            } else {
-                if (node.parentNode !== container) {
-                    throw new Error('unexpected parentNode');
-                }
+            } else if (node.parentNode === container) {
+                // Already in the right container — sanity-check position only.
                 if (node.nextSibling !== beforeNode) {
                     throw new Error('unexpected nextSibling');
+                }
+            } else {
+                // Portal: this component's node is already attached to an external
+                // container (the portal target). Don't move node itself; instead
+                // insert this component's children into node (the target).
+                //
+                // Anchor subtlety: insertNodesInto is called twice on first mount —
+                // once by the mount listener (appendFragment → insertBefore, which
+                // freshly inserts each child into the target) and again by the caller
+                // of insertBefore on this portal, which calls insertNodesInto to place
+                // the portal in the outer DOM. Since the portal redirects, this second
+                // call just needs to verify the children are correctly placed in the
+                // target. On re-mounts the children's nodes have been removed from the
+                // target, so only that second call runs and must insert fresh.
+                //
+                // We distinguish the two cases by checking whether the computed anchor
+                // node is already inside the target: if yes, children are already in
+                // place and we pass the real anchor for position verification; if no,
+                // we're doing a fresh insertion and fall back to null (append in order).
+                for (let c = this.firstChild; c; c = c.nextSibling) {
+                    if (!c.detached) {
+                        const anchor = c.getInsertionAnchor();
+                        c.insertNodesInto(node, anchor?.parentNode === (node as Element) ? anchor : null);
+                    }
                 }
             }
         } else {
@@ -960,12 +985,17 @@ export class Component<out N extends Node | null = Node | null> {
     private removeNodesFrom(container: Node): void {
         const node = this.node;
         if (node) {
-            if (node.parentNode) {
-                if (node.parentNode !== container) {
-                    throw new Error('unexpected parent node');
-                }
+            if (node.parentNode === container) {
+                // Normal case: remove node from its container.
                 container.removeChild(node);
+            } else if (node.parentNode) {
+                // Portal: node lives in an external container (the portal target).
+                // Remove children from node (the target) rather than touching node itself.
+                for (let c = this.firstChild; c; c = c.nextSibling) {
+                    c.removeNodesFrom(node);
+                }
             }
+            // else: node is not in the DOM at all — nothing to remove.
         } else {
             for (let c = this.firstChild; c; c = c.nextSibling) {
                 if (!c.detached) {
@@ -1336,6 +1366,28 @@ export function Unsuspense(...bodyFragment: FragmentItem[]) {
         .appendFragment(bodyFragment);
 }
 
+
+// Portal renders its children into `target` (an arbitrary DOM element) rather than
+// into the natural parent container. The component tree remains intact so context,
+// updates, and lifecycle all work normally; only DOM insertion is redirected.
+//
+// Implementation: Portal is a Component<Element> whose node IS the portal target.
+// getChildContainerNode() already returns this.node for any non-null-node component,
+// so children naturally land in target with no extra plumbing. insertNodesInto and
+// removeNodesFrom detect the portal case by checking node.parentNode !== container.
+//
+// Content is appended lazily on first mount (not at construction time) to avoid
+// inserting into the target before the portal is part of the component tree — which
+// would cause detached DOM nodes and break updateRoot() traversal from inside the portal.
+export function Portal(target: Element, ...content: FragmentItem[]): Component<Element> {
+    return new Component<Element>(target, 'Portal')
+        .addMountListener(function onPortalMount() {
+            // Guard keeps content across unmount/remount cycles: children remain in the
+            // component tree when the portal is unmounted (only their DOM nodes are
+            // removed from target), so appendFragment must only run once.
+            if (!this.getFirstChild()) this.appendFragment(content);
+        });
+}
 
 export function Lazy(bodyFunc: (this: Component<null>) => FragmentItem | Promise<FragmentItem>): Component<null> {
     return new Component(null, 'Lazy').setLazyContent(bodyFunc);
