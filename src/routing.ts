@@ -210,8 +210,6 @@ export function Outlet() {
 //   off all matched loaders simultaneously like React Router / TanStack Router.
 // TODO: Prefetching on intent — preload route code/data on link hover or viewport intersection.
 //   importPath and initStores per route already provide the pieces needed.
-// TODO: Scroll restoration — remember scroll position on back-navigation. Needs
-//   scrollRestoration: 'manual' + position cache keyed by history entry.
 // TODO: Navigation blocking — "unsaved changes" guards for SPA navigation (beforeunload
 //   only covers tab close).
 
@@ -424,6 +422,7 @@ export class Router extends Route<{}> {
     pushUrl(url: string): boolean {
         if (this.tryMatch(url)) {
             history.pushState(null, '', url);
+            window.scrollTo(0, 0);
             return true;
         } else {
             console.warn('pushUrl with unknown url: ' + url);
