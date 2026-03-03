@@ -1,5 +1,4 @@
 import { Component, Context, type FragmentItem, HTML, type HTMLChildFragment, hasStoreHydrationData, setStoreHydrationData } from './core';
-import { deepEqual } from './util';
 
 const { a } = HTML;
 
@@ -27,7 +26,8 @@ type ParseUrlSpecTypedKey<S extends string> =
 type ParseUrlSpecType<S extends string> =
     S extends 'string' ? string :
     S extends 'number' ? number :
-    S extends 'boolean' ? boolean : unknown;
+    S extends 'boolean' ? boolean :
+    S extends '*' ? string : unknown;
 
 type FunctionsOf<T> = {
     [K in keyof T]-?: () => T[K];
@@ -41,7 +41,7 @@ const test: Test = {} as any;
 
 type UrlMatcher = (url: string, args: { [key: string]: unknown }) => string | false;
 
-function parseUrlSpec(spec: string): UrlMatcher {
+export function parseUrlSpec(spec: string): UrlMatcher {
     if (spec === '') {
         return (url, _) => url;
     }
@@ -113,6 +113,12 @@ function parseUrlSpec(spec: string): UrlMatcher {
     const splitFrag = fragment.split(':');
 
     if (splitFrag.length === 1) {
+        if (fragment === '*') {
+            // unnamed wildcard: match any remaining path and query string
+            return function parseWildcard(_url, args) {
+                return parseRest('', args);
+            };
+        }
         // no ':' in fragment; match verbatim
         return function parsePathComponent(url, args) {
             if (url.startsWith(fragment)) {
@@ -130,6 +136,15 @@ function parseUrlSpec(spec: string): UrlMatcher {
     const [key, type] = splitFrag;
     if (!key || !type) {
         throw new Error(`bad url spec fragment: ${fragment}`);
+    }
+
+    if (type === '*') {
+        // named wildcard: capture remaining path as string, consume everything including query
+        return function parseNamedWildcard(url, args) {
+            const q = url.indexOf('?');
+            args[key] = q < 0 ? url : url.substring(0, q);
+            return parseRest('', args);
+        };
     }
 
     const parser = createValueParser(type);
@@ -176,37 +191,6 @@ function createValueParser(type: string, allowEmpty: boolean = false): (s: strin
 
 
 
-function runParseUrlSpecTests() {
-    runTest('/', '/', '', {});
-    runTest('/', '/foo', 'foo', {});
-    runTest('/foo', '/foo', '', {});
-    runTest('/foo:number', '/123', '', { foo: 123 });
-    runTest('/foo:number', '/nan', false, {});
-    runTest('/foo:number/bar:string', '/123/str', '', { foo: 123, bar: 'str' });
-    runTest('/prefix/foo:number/bar:string', '/prefix/123/str', '', { foo: 123, bar: 'str' });
-    runTest('/foo?b:boolean&n:number&s:string', '/foo?b=true&n=123&s=bar', '', { b: true, n: 123, s: 'bar' });
-    runTest('/foo?b:boolean&n:number&s:string', '/foo?b=true', '', { b: true });
-    runTest('/foo?b:boolean&n:number&s:string', '/foo?b&n&s', '', { b: true, n: 0, s: '' });
-    runTest('/foo/b:boolean', '/foo/', false, {});
-    runTest('/foo/n:number', '/foo/', false, {});
-    runTest('/foo/s:string', '/foo/', false, {});
-    runTest('/', '', '', {});
-    runTest('/?arg:number', '?arg=123', '', { arg: 123 });
-    runTest('/foo/', '/foo', '', {});
-    runTest('/foo/?arg:number', '/foo?arg=123', '', { arg: 123 });
-
-    function runTest(spec: string, url: string, expectedResult: string | false, expectedArgs: { [key: string]: unknown }): void {
-        const matcher = parseUrlSpec(spec);
-        const args: { [key: string]: unknown } = {};
-        const result = matcher(url, args);
-        console.assert(result === expectedResult);
-        console.assert(deepEqual(args, expectedArgs));
-    }
-}
-runParseUrlSpecTests();
-
-
-
 const RouteContext = new Context<Route<unknown>>('RouteContext');
 
 export function Outlet() {
@@ -230,8 +214,6 @@ export function Outlet() {
 //   scrollRestoration: 'manual' + position cache keyed by history entry.
 // TODO: Navigation blocking — "unsaved changes" guards for SPA navigation (beforeunload
 //   only covers tab close).
-// TODO: 404 / catch-all routes — wildcard fallback for unmatched URLs instead of silent
-//   redirect to /.
 
 export type RouteOptions = {
     transient?: boolean;

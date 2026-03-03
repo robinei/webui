@@ -40,6 +40,8 @@ export const testsRoute = router.subRoute('/tests',
     { transient: true, importPath: './pages/tests' }
 );
 
+export const notFoundRoute = router.subRoute('/*', NotFoundPage);
+
 if (typeof document !== 'undefined') {
     readEmbeddedStoreData();
     router.mount(document.body);
@@ -72,6 +74,10 @@ function RootPage(): FragmentItem {
 
 function DefaultPage(): FragmentItem {
     return 'Welcome!';
+}
+
+function NotFoundPage(): FragmentItem {
+    return '404 Not Found';
 }
 
 function dumpComponentTree(root: Component): string {

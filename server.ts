@@ -257,7 +257,6 @@ const server = Bun.serve({
             });
         }
 
-        // 404 for invalid routes
         return new Response('Not Found', { status: 404 });
     }
 });

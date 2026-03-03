@@ -7,6 +7,7 @@ import { controlFlowSuite } from './control-flow';
 import { lifecycleSuite } from './lifecycle';
 import { contextErrorsSuite } from './context-errors';
 import { utilSuite } from './util';
+import { routingSuite } from './routing';
 
 const { div, span, button, h2, h3, pre } = HTML;
 
@@ -156,6 +157,7 @@ const allSuites: TestSuite[] = [
     lifecycleSuite,
     contextErrorsSuite,
     utilSuite,
+    routingSuite,
 ];
 
 export function TestsPage(): FragmentItem {
