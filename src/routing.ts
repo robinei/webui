@@ -210,13 +210,12 @@ export function Outlet() {
 //   off all matched loaders simultaneously like React Router / TanStack Router.
 // TODO: Prefetching on intent — preload route code/data on link hover or viewport intersection.
 //   importPath and initStores per route already provide the pieces needed.
-// TODO: Navigation blocking — "unsaved changes" guards for SPA navigation (beforeunload
-//   only covers tab close).
-
 export type RouteOptions = {
     transient?: boolean;
     importPath?: string;
     initStores?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    /** Called before navigating away from this route. Return false to block navigation. */
+    guard?: (toUrl: string) => boolean;
 };
 
 export class Route<Args> {
@@ -234,6 +233,7 @@ export class Route<Args> {
     private readonly transient?: boolean;
     private readonly importPath?: string;
     private readonly initStoresFn?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    private readonly guardFn?: (toUrl: string) => boolean;
 
     protected constructor(
         private readonly parent: Route<unknown> | null,
@@ -245,6 +245,7 @@ export class Route<Args> {
         this.transient = options?.transient;
         this.importPath = options?.importPath;
         this.initStoresFn = options?.initStores;
+        this.guardFn = options?.guard;
         const name = urlSpec ? `Route[${urlSpec}]` : 'Router';
         this.component = new Component(null, name).provideContext(RouteContext, this);
     }
@@ -282,6 +283,26 @@ export class Route<Args> {
         }
         if (this.matchedSubRoute) fns.push(...this.matchedSubRoute.getMatchedInitStores());
         return fns;
+    }
+
+    // Fires guards for this route and all matched subroutes unconditionally.
+    private runAllGuards(toUrl: string): boolean {
+        if (this.guardFn && !this.guardFn(toUrl)) return false;
+        return this.matchedSubRoute?.runAllGuards(toUrl) ?? true;
+    }
+
+    // Runs guards for all currently matched routes that the new URL would leave.
+    // restForThisRoute: the portion of toUrl this route's matcher should evaluate.
+    protected runGuards(toUrl: string, restForThisRoute?: string): boolean {
+        const rest = this.matcher(restForThisRoute ?? toUrl, {});
+        if (rest === false) {
+            // This route and its entire matched subtree are being left
+            return this.runAllGuards(toUrl);
+        }
+        if (this.matchedSubRoute) {
+            return this.matchedSubRoute.runGuards(toUrl, rest);
+        }
+        return true;
     }
 
     Link(args: Args, ...fragment: HTMLChildFragment<HTMLAnchorElement>[]) {
@@ -406,6 +427,9 @@ export class Route<Args> {
 const RouterContext = new Context<Router>('RouterContext');
 
 export class Router extends Route<{}> {
+    private position = 0;
+    private reversingNavigation = false;
+
     constructor(makeContent?: () => FragmentItem) {
         super(null, '', makeContent ?? Outlet);
         this.component.addMountListener(() => window.addEventListener('popstate', this.tryMatchLocation));
@@ -414,14 +438,16 @@ export class Router extends Route<{}> {
     }
 
     mount(container: HTMLElement): Component<null> {
+        history.replaceState({ position: 0 }, '', location.href);
         this.tryMatchLocation();
         new Component(container).appendChild(this.component).mount();
         return this.component;
     }
 
     pushUrl(url: string): boolean {
+        if (!this.runGuards(url)) return false;
         if (this.tryMatch(url)) {
-            history.pushState(null, '', url);
+            history.pushState({ position: ++this.position }, '', url);
             window.scrollTo(0, 0);
             return true;
         } else {
@@ -432,7 +458,7 @@ export class Router extends Route<{}> {
 
     replaceUrl(url: string): boolean {
         if (this.tryMatch(url)) {
-            history.replaceState(null, '', url);
+            history.replaceState({ position: this.position }, '', url);
             return true;
         } else {
             console.warn('replaceUrl with unknown url: ' + url);
@@ -451,8 +477,21 @@ export class Router extends Route<{}> {
         return this.getMatchedChunks();
     }
 
-    private tryMatchLocation = () => {
+    private tryMatchLocation = (ev?: Event) => {
         const url = document.location.pathname + document.location.search;
+        if (ev instanceof PopStateEvent) {
+            if (this.reversingNavigation) {
+                this.reversingNavigation = false;
+                return;
+            }
+            const newPosition = (ev.state as { position?: number } | null)?.position ?? 0;
+            if (!this.runGuards(url)) {
+                this.reversingNavigation = true;
+                history.go(this.position - newPosition);
+                return;
+            }
+            this.position = newPosition;
+        }
         if (!this.tryMatch(url)) {
             console.warn('going back to / due to unknown location: ' + url);
             this.replaceUrl('/');

@@ -2,7 +2,6 @@ import { type FragmentItem, HTML, For } from '../core';
 import { Outlet } from '../routing';
 import { prefsRoute, editPrefRoute } from '..';
 
-
 interface Preference {
     readonly name: string;
     readonly value: string;
@@ -35,7 +34,7 @@ function setPreference(prefs: ReadonlyArray<Preference>, name: string, value: st
 }
 
 
-const { div, hr, br, ul, li, input } = HTML;
+const { div, hr, br, ul, li, input, button } = HTML;
 
 export function PreferencesPage(): FragmentItem {
     return div(
@@ -60,14 +59,22 @@ export function PreferencesListPage(): FragmentItem {
     );
 }
 
+let saved = false;
+export const editPrefGuard = () => saved || confirm('Discard unsaved changes?');
+
 export function EditPreferencePage({ name }: { name(): string }): FragmentItem {
+    saved = false;
+
+    function save() {
+        preferences = setPreference(preferences, name(), textInput.node.value);
+        saved = true;
+    }
+
     const textInput = input({
         value: () => getPreference(preferences, name()),
-        oninput() {
-            preferences = setPreference(preferences, name(), textInput.node.value);
-        },
         onkeydown(ev) {
             if (ev.key === 'Enter') {
+                save();
                 prefsRoute.push({});
             }
         },
@@ -75,19 +82,19 @@ export function EditPreferencePage({ name }: { name(): string }): FragmentItem {
             setTimeout(() => textInput.node.focus(), 25);
         },
     });
+
     return div(
         'Editing ',
         name,
         br(),
         textInput,
-        prefsRoute.Link({}, 'done'),
+        ' ',
+        button('Save', { onclick() { save(); prefsRoute.push({}); } }),
+        ' ',
+        prefsRoute.Link({}, 'cancel'),
         br(),
         editPrefRoute.Link({ name: 'password' }, 'password'),
         br(),
         editPrefRoute.Link({ name: 'username' }, 'username'),
-    ).addMountListener(() => {
-        console.log('MOUNT');
-    }).addUnmountListener(() => {
-        console.log('UNMOUNT');
-    });
+    );
 }
