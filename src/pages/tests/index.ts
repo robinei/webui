@@ -8,6 +8,7 @@ import { lifecycleSuite } from './lifecycle';
 import { contextErrorsSuite } from './context-errors';
 import { utilSuite } from './util';
 import { routingSuite } from './routing';
+import { observableSuite } from './observable';
 
 const { div, span, button, h2, h3, pre } = HTML;
 
@@ -158,6 +159,7 @@ const allSuites: TestSuite[] = [
     contextErrorsSuite,
     utilSuite,
     routingSuite,
+    observableSuite,
 ];
 
 export function TestsPage(): FragmentItem {

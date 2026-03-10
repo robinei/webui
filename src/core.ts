@@ -1,13 +1,14 @@
 import { longestIncreasingSubsequence, type WritableKeys, errorDescription, isPlainObject, type ThinVec, tvPush, tvForEach } from './util';
+import { Observable, Effect } from './observable';
 
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
 
-export type Value<T> = T | (() => T);
+export type Value<T> = T | (() => T) | Observable<T>;
 
 export function isStaticValue<T>(value: Value<T>): value is T {
-    return typeof value !== 'function';
+    return typeof value !== 'function' && !(value instanceof Observable);
 }
 
 export function fields<T extends object>(source: () => T): { readonly [K in keyof T]: () => T[K] } {
@@ -19,7 +20,7 @@ export function fields<T extends object>(source: () => T): { readonly [K in keyo
 }
 
 export function memoFilter<T>(source: Value<ReadonlyArray<T>>, predicate: (item: T) => boolean): () => T[] {
-    const getItems = isStaticValue(source) ? () => source : source;
+    const getItems: () => ReadonlyArray<T> = isStaticValue(source) ? () => source : source instanceof Observable ? () => source.get() : source;
     let cached: T[] = [];
     return () => {
         const items = getItems();
@@ -346,6 +347,20 @@ export class Component<out N extends Node | null = Node | null> {
 
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck: boolean = true): Component<N> {
         const boundWatcher = watcher.bind(this);
+
+        if (value instanceof Observable) {
+            let lastEmittedValue: T | Nil = Nil;
+            const effect = new Effect(() => {
+                const newValue = value.get();
+                if (!equalCheck || lastEmittedValue !== newValue) {
+                    lastEmittedValue = newValue;
+                    try { boundWatcher(newValue); } catch (e) { this.injectError(e); }
+                }
+            }, { active: false });
+            this.addMountListener(() => effect.activate());
+            this.addUnmountListener(() => effect.deactivate());
+            return this;
+        }
 
         if (isStaticValue(value)) {
             try {
@@ -1095,7 +1110,11 @@ function visitFragment(fragment: FragmentItem, text: string, handler: (component
             handler(DynamicText(fragment));
             return '';
         default:
-            if (fragment instanceof Component) {
+            if (fragment instanceof Observable) {
+                if (text) handler(StaticText(text));
+                handler(DynamicText(fragment));
+                return '';
+            } else if (fragment instanceof Component) {
                 if (text) {
                     handler(StaticText(text));
                 }
@@ -1503,7 +1522,7 @@ export function VirtualList<T extends object>(opts: VirtualListOptions<T>): Comp
     return container;
 
     function reconcile() {
-        const items = isStaticValue(itemsValue) ? itemsValue : itemsValue();
+        const items = isStaticValue(itemsValue) ? itemsValue : itemsValue instanceof Observable ? itemsValue.get() : itemsValue();
         const n = items.length;
         const scrollPos = horizontal ? container.node.scrollLeft : container.node.scrollTop;
         const viewportSize = horizontal ? container.node.clientWidth : container.node.clientHeight;
