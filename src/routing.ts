@@ -214,8 +214,6 @@ export type RouteOptions = {
     transient?: boolean;
     importPath?: string;
     initStores?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
-    /** Called before navigating away from this route. Return false to block navigation. */
-    guard?: (toUrl: string) => boolean;
 };
 
 export class Route<Args> {
@@ -233,7 +231,6 @@ export class Route<Args> {
     private readonly transient?: boolean;
     private readonly importPath?: string;
     private readonly initStoresFn?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
-    private readonly guardFn?: (toUrl: string) => boolean;
 
     protected constructor(
         private readonly parent: Route<unknown> | null,
@@ -245,7 +242,6 @@ export class Route<Args> {
         this.transient = options?.transient;
         this.importPath = options?.importPath;
         this.initStoresFn = options?.initStores;
-        this.guardFn = options?.guard;
         const name = urlSpec ? `Route[${urlSpec}]` : 'Router';
         this.component = new Component(null, name).provideContext(RouteContext, this);
     }
@@ -283,26 +279,6 @@ export class Route<Args> {
         }
         if (this.matchedSubRoute) fns.push(...this.matchedSubRoute.getMatchedInitStores());
         return fns;
-    }
-
-    // Fires guards for this route and all matched subroutes unconditionally.
-    private runAllGuards(toUrl: string): boolean {
-        if (this.guardFn && !this.guardFn(toUrl)) return false;
-        return this.matchedSubRoute?.runAllGuards(toUrl) ?? true;
-    }
-
-    // Runs guards for all currently matched routes that the new URL would leave.
-    // restForThisRoute: the portion of toUrl this route's matcher should evaluate.
-    protected runGuards(toUrl: string, restForThisRoute?: string): boolean {
-        const rest = this.matcher(restForThisRoute ?? toUrl, {});
-        if (rest === false) {
-            // This route and its entire matched subtree are being left
-            return this.runAllGuards(toUrl);
-        }
-        if (this.matchedSubRoute) {
-            return this.matchedSubRoute.runGuards(toUrl, rest);
-        }
-        return true;
     }
 
     Link(args: Args, ...fragment: HTMLChildFragment<HTMLAnchorElement>[]) {
@@ -429,11 +405,29 @@ const RouterContext = new Context<Router>('RouterContext');
 export class Router extends Route<{}> {
     private position = 0;
     private reversingNavigation = false;
+    private readonly guards: Array<(toUrl: string) => boolean> = [];
+
+    addGuard(fn: (toUrl: string) => boolean): () => void {
+        this.guards.push(fn);
+        return () => {
+            const idx = this.guards.indexOf(fn);
+            if (idx >= 0) this.guards.splice(idx, 1);
+        };
+    }
+
+    private runGuards(toUrl: string): boolean {
+        for (const guard of this.guards) {
+            if (!guard(toUrl)) return false;
+        }
+        return true;
+    }
 
     constructor(makeContent?: () => FragmentItem) {
         super(null, '', makeContent ?? Outlet);
-        this.component.addMountListener(() => window.addEventListener('popstate', this.tryMatchLocation));
-        this.component.addUnmountListener(() => window.removeEventListener('popstate', this.tryMatchLocation));
+        this.component.addEffect(() => {
+            window.addEventListener('popstate', this.tryMatchLocation);
+            return () => window.removeEventListener('popstate', this.tryMatchLocation);
+        });
         this.component.provideContext(RouterContext, this);
     }
 
@@ -497,6 +491,53 @@ export class Router extends Route<{}> {
             this.replaceUrl('/');
         }
     };
+}
+
+export function createBlocker(shouldBlock: () => boolean) {
+    let pendingUrl: string | null = null;
+    let bypassing = false;
+    let updateComponent: Component | null = null;
+    let router: Router | null = null;
+
+    function guard(toUrl: string): boolean {
+        if (bypassing) return true;
+        if (!shouldBlock()) return true;
+        pendingUrl = toUrl;
+        updateComponent?.updateRoot();
+        return false;
+    }
+
+    const blocker = {
+        get isBlocked() { return pendingUrl !== null; },
+
+        proceed() {
+            const url = pendingUrl;
+            pendingUrl = null;
+            if (url !== null) {
+                bypassing = true;
+                router!.pushUrl(url);
+                bypassing = false;
+            }
+        },
+
+        reset() {
+            pendingUrl = null;
+            updateComponent?.updateRoot();
+        },
+
+        attach(component: Component): () => void {
+            router = component.getContext(RouterContext);
+            updateComponent = component;
+            return router.addGuard(guard);
+        },
+
+        connect<C extends Component>(component: C): C {
+            component.addEffect(() => blocker.attach(component));
+            return component;
+        },
+    };
+
+    return blocker;
 }
 
 function Link(url: string, ...fragment: HTMLChildFragment<HTMLAnchorElement>[]) {

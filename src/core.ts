@@ -319,6 +319,18 @@ export class Component<out N extends Node | null = Node | null> {
         return this;
     }
 
+    addEffect(fn: (this: Component<N>) => (() => void) | void): Component<N> {
+        let cleanup: (() => void) | null = null;
+        this.addMountedListener(function onEffectMount(this: Component<N>) {
+            cleanup = fn.call(this) ?? null;
+        });
+        this.addUnmountListener(function onEffectUnmount() {
+            cleanup?.();
+            cleanup = null;
+        });
+        return this;
+    }
+
     addUpdateListener(listener: (this: Component<N>) => void | false, invokeNow = false): Component<N> {
         const boundListener = listener.bind(this);
         this.updateListeners = tvPush(this.updateListeners, boundListener);

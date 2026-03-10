@@ -1,5 +1,5 @@
-import { type FragmentItem, HTML, For } from '../core';
-import { Outlet } from '../routing';
+import { type FragmentItem, HTML, For, When } from '../core';
+import { Outlet, createBlocker } from '../routing';
 import { prefsRoute, editPrefRoute } from '..';
 
 interface Preference {
@@ -34,7 +34,7 @@ function setPreference(prefs: ReadonlyArray<Preference>, name: string, value: st
 }
 
 
-const { div, hr, br, ul, li, input, button } = HTML;
+const { div, hr, br, ul, li, span, input, button } = HTML;
 
 export function PreferencesPage(): FragmentItem {
     return div(
@@ -59,19 +59,23 @@ export function PreferencesListPage(): FragmentItem {
     );
 }
 
-let saved = false;
-export const editPrefGuard = () => saved || confirm('Discard unsaved changes?');
-
 export function EditPreferencePage({ name }: { name(): string }): FragmentItem {
-    saved = false;
+    let dirty = false;
+    const blocker = createBlocker(() => dirty);
 
     function save() {
         preferences = setPreference(preferences, name(), textInput.node.value);
-        saved = true;
+        dirty = false;
+    }
+
+    function cancel() {
+        dirty = false;
+        prefsRoute.push({});
     }
 
     const textInput = input({
         value: () => getPreference(preferences, name()),
+        oninput() { dirty = true; },
         onkeydown(ev) {
             if (ev.key === 'Enter') {
                 save();
@@ -83,7 +87,7 @@ export function EditPreferencePage({ name }: { name(): string }): FragmentItem {
         },
     });
 
-    return div(
+    return blocker.connect(div(
         'Editing ',
         name,
         br(),
@@ -91,10 +95,19 @@ export function EditPreferencePage({ name }: { name(): string }): FragmentItem {
         ' ',
         button('Save', { onclick() { save(); prefsRoute.push({}); } }),
         ' ',
-        prefsRoute.Link({}, 'cancel'),
+        button('Cancel', { onclick: cancel }),
+        When(() => blocker.isBlocked,
+            div(
+                br(),
+                span('Unsaved changes! '),
+                button('Leave', { onclick() { blocker.proceed(); } }),
+                ' ',
+                button('Stay', { onclick() { blocker.reset(); } }),
+            ),
+        ),
         br(),
         editPrefRoute.Link({ name: 'password' }, 'password'),
         br(),
         editPrefRoute.Link({ name: 'username' }, 'username'),
-    );
+    ));
 }

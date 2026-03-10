@@ -14,14 +14,9 @@ export const virtualRoute = router.subRoute('/virtual', async () => (await impor
 
 export const prefsRoute = router.subRoute('/prefs', async () => (await import('./pages/prefs')).PreferencesPage(), { importPath: './pages/prefs' });
 export const prefListRoute = prefsRoute.subRoute('/', async () => (await import('./pages/prefs')).PreferencesListPage(), { importPath: './pages/prefs' });
-let editPrefGuard: (() => boolean) | null = null;
 export const editPrefRoute = prefsRoute.subRoute('/name:string',
-    async ({ name }) => {
-        const mod = await import('./pages/prefs');
-        editPrefGuard = mod.editPrefGuard;
-        return mod.EditPreferencePage({ name });
-    },
-    { importPath: './pages/prefs', guard: () => editPrefGuard ? editPrefGuard() : true }
+    async ({ name }) => (await import('./pages/prefs')).EditPreferencePage({ name }),
+    { importPath: './pages/prefs' }
 );
 
 export const newsRoute = router.subRoute('/news',
