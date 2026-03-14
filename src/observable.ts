@@ -418,3 +418,29 @@ function setValueForKey<T extends object>(obj: T, key: string, value: unknown): 
 export function isObservableProxy<T>(value: T | (() => T) | Observable<T> | ObservableProxy<T>): value is ObservableProxy<T> {
     return value && typeof value === 'object' && (value as any)[observableProxySymbol] === true;
 }
+
+
+export function createComputedFamily<K, T>(
+    factory: (key: K) => (lastValue?: T) => T,
+    options?: ComputedOptions & { cacheKey?: (k: K) => string },
+): (key: K) => Computed<T> {
+    const toCacheKey: (k: K) => string = options?.cacheKey ?? (k => JSON.stringify(k));
+    const { cacheKey: _, ...computedOptions } = options ?? {};
+    const cache = new Map<string, Computed<T>>();
+
+    return function getOrCreateComputed(key: K): Computed<T> {
+        const ck = toCacheKey(key);
+        let c = cache.get(ck);
+        if (!c) {
+            c = new Computed(factory(key), {
+                ...computedOptions,
+                deactivated() {
+                    cache.delete(ck);
+                    computedOptions.deactivated?.call(c!);
+                },
+            });
+            cache.set(ck, c);
+        }
+        return c;
+    };
+}

@@ -1,4 +1,5 @@
 import { Component, type FragmentItem, HTML, Suspense, readEmbeddedStoreData } from './core';
+import { hydrateQueryCache } from './query';
 import { Router, Outlet } from './routing';
 
 const { nav, main, button } = HTML;
@@ -25,17 +26,11 @@ export const newsRoute = router.subRoute('/news',
 );
 export const newsListRoute = newsRoute.subRoute('/',
     async () => (await import('./pages/news')).NewsListPage(),
-    {
-        importPath: './pages/news',
-        initStores: async () => (await import('./pages/news')).initStores()
-    }
+    { importPath: './pages/news' }
 );
 export const newsPostRoute = newsRoute.subRoute('/id:number',
     async ({ id }) => (await import('./pages/news')).NewsPostPage({ id }),
-    {
-        importPath: './pages/news',
-        initStores: async (args) => (await import('./pages/news')).initPostStores(args.id as number)
-    }
+    { importPath: './pages/news' }
 );
 
 export const testsRoute = router.subRoute('/tests',
@@ -47,6 +42,8 @@ export const notFoundRoute = router.subRoute('/*', NotFoundPage);
 
 if (typeof document !== 'undefined') {
     readEmbeddedStoreData();
+    const cacheEl = document.getElementById('__QUERY_CACHE__');
+    if (cacheEl) { hydrateQueryCache(JSON.parse(cacheEl.textContent!)); cacheEl.remove(); }
     router.mount(document.body);
 }
 

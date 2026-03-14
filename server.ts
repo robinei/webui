@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 
 import { router } from './src/index';
+import { setServerHooks } from './src/core';
+import { createQueryEntry, serializeQueryCache } from './src/query';
+import { installFakeDOM, setFakeLocation } from './src/dom-shim';
 import { watch } from 'fs';
 
 // Map from importPath (e.g. './pages/test') to chunk URLs needed for that route
@@ -153,7 +156,7 @@ async function build() {
     return true;
 }
 
-function generateHtml(routeChunkUrls: string[], origin: string, storeData?: Record<string, unknown> | null): string {
+function generateHtml(routeChunkUrls: string[], origin: string, storeData?: Record<string, unknown> | null, queryCache?: Record<string, unknown> | null): string {
     const inlinedUrls = new Set([...entryChunks, ...routeChunkUrls]);
 
     // All chunk URLs (everything except the entry point itself)
@@ -185,19 +188,70 @@ function generateHtml(routeChunkUrls: string[], origin: string, storeData?: Reco
     const entryContent = rewriteImports(fileContents.get(entryUrl) || '');
 
     const storeDataTag = storeData ? `\n    <script type="application/json" id="__STORE_DATA__">${JSON.stringify(storeData)}</script>` : '';
+    const queryCacheTag = queryCache && Object.keys(queryCache).length
+        ? `\n    <script type="application/json" id="__QUERY_CACHE__">${JSON.stringify(queryCache)}</script>`
+        : '';
 
     return `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
     <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4//8/AAX+Av7czFnnAAAAAElFTkSuQmCC">
-    <style>${stylesContent}</style>${storeDataTag}
+    <style>${stylesContent}</style>${storeDataTag}${queryCacheTag}
     <script type="importmap">${importMap}</script>
 </head>
 <body>
     <script type="module">${entryContent}</script>
 </body>
 </html>`;
+}
+
+// Install fake DOM once at startup (permanent — only document.location varies per request)
+installFakeDOM();
+
+// Settlement tracking + query bind hooks — set once at startup, per-request state lives in each cloned root's tracker
+setServerHooks({
+    onAsyncLoadStart: (c) => (c.getRoot() as any)._asyncLoadTracker?.onStart(),
+    onAsyncLoadEnd:   (c) => (c.getRoot() as any)._asyncLoadTracker?.onEnd(),
+    onQueryBind: (c, key) => {
+        const tracker = (c.getRoot() as any)._asyncLoadTracker;
+        if (!tracker) return null;
+        let entry = tracker.cache.get(key);
+        if (!entry) { entry = createQueryEntry(); tracker.cache.set(key, entry); }
+        return entry;
+    },
+});
+
+async function discoverQueries(urlPath: string, search: string): Promise<Record<string, any>> {
+    const cloned = router.clone();
+
+    let pending = 0;
+    let settleResolve: (() => void) | undefined;
+    const settled = new Promise<void>(resolve => {
+        settleResolve = resolve;
+        // Resolve immediately if no async loads start before the first microtask
+        Promise.resolve().then(() => { if (pending === 0) resolve(); });
+    });
+    const tracker = {
+        cache: new Map<string, unknown>(),
+        onStart() { pending++; },
+        onEnd() {
+            if (--pending === 0)
+                Promise.resolve().then(() => { if (pending === 0) settleResolve?.(); });
+        },
+    };
+    // Synchronous: set location, prepare wrapper, install tracker on wrapper (= getRoot()),
+    // then call wrapper.mount() — no await between setFakeLocation and prepareMount.
+    setFakeLocation(urlPath, search);
+    const wrapper = cloned.prepareMount((globalThis as any).document.body);
+    (wrapper as any)._asyncLoadTracker = tracker;
+    wrapper.mount();
+    try {
+        await settled;
+    } finally {
+        wrapper.unmount();
+    }
+    return serializeQueryCache(tracker.cache as Map<string, any>);
 }
 
 // Initial build
@@ -226,7 +280,9 @@ const server = Bun.serve({
         const urlPath = path + url.search;
         const importPaths = router.getChunksForUrl(urlPath);
 
-        if (importPaths !== null) {
+        const acceptsHtml = req.headers.get('Accept')?.includes('text/html') ?? false;
+
+        if (importPaths !== null && acceptsHtml) {
             // Resolve import paths to chunk URLs
             const routeChunks: string[] = [];
             const seen = new Set<string>();
@@ -252,7 +308,10 @@ const server = Bun.serve({
                 }
             }
 
-            return new Response(generateHtml(routeChunks, url.origin, storeData), {
+            // Prefetch queries by mounting the cloned router on a fake DOM
+            const queryCache = await discoverQueries(url.pathname, url.search);
+
+            return new Response(generateHtml(routeChunks, url.origin, storeData, queryCache), {
                 headers: { 'Content-Type': 'text/html' },
             });
         }

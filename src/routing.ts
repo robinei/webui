@@ -235,7 +235,7 @@ export class Route<Args> {
     protected constructor(
         private readonly parent: Route<unknown> | null,
         private readonly urlSpec: string,
-        private readonly makeContent: (args: any) => FragmentItem | Promise<FragmentItem>,
+        protected readonly makeContent: (args: any) => FragmentItem | Promise<FragmentItem>,
         options?: RouteOptions
     ) {
         this.matcher = parseUrlSpec(urlSpec);
@@ -397,6 +397,18 @@ export class Route<Args> {
             this.update();
         }
     }
+
+    protected cloneUnder(newParent: Route<unknown> | null): Route<Args> {
+        const c = new Route<Args>(newParent, this.urlSpec, this.makeContent,
+            { transient: this.transient, importPath: this.importPath, initStores: this.initStoresFn });
+        for (const sub of this.subRoutes) c.subRoutes.push(sub.cloneUnder(c));
+        return c;
+    }
+
+    // Called from Router.clone() — within Route's class body, private field access on any Route instance is valid.
+    protected cloneSubRoutesInto(target: Route<unknown>): void {
+        for (const sub of this.subRoutes) target.subRoutes.push(sub.cloneUnder(target));
+    }
 }
 
 
@@ -431,11 +443,18 @@ export class Router extends Route<{}> {
         this.component.provideContext(RouterContext, this);
     }
 
-    mount(container: HTMLElement): Component<null> {
+    prepareMount(container: HTMLElement): Component<HTMLElement> {
         history.replaceState({ position: 0 }, '', location.href);
         this.tryMatchLocation();
-        new Component(container).appendChild(this.component).mount();
-        return this.component;
+        const wrapper = new Component(container);
+        wrapper.appendChild(this.component);
+        return wrapper;
+    }
+
+    mount(container: HTMLElement): Component<HTMLElement> {
+        const wrapper = this.prepareMount(container);
+        wrapper.mount();
+        return wrapper;
     }
 
     pushUrl(url: string): boolean {
@@ -470,6 +489,14 @@ export class Router extends Route<{}> {
         }
         return this.getMatchedChunks();
     }
+
+    clone(): Router {
+        const c = new Router(this.makeContent as () => FragmentItem);
+        this.cloneSubRoutesInto(c);
+        return c;
+    }
+
+    get rootComponent(): Component<null> { return this.component; }
 
     private tryMatchLocation = (ev?: Event) => {
         const url = document.location.pathname + document.location.search;

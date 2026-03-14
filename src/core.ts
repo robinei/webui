@@ -1,6 +1,20 @@
 import { longestIncreasingSubsequence, type WritableKeys, errorDescription, isPlainObject, type ThinVec, tvPush, tvForEach } from './util';
 import { Observable, Effect } from './observable';
 
+export let onAsyncLoadStart: ((c: Component) => void) | undefined;
+export let onAsyncLoadEnd: ((c: Component) => void) | undefined;
+export let onQueryBind: ((component: Component, key: string) => object | null) | undefined;
+
+export function setServerHooks(hooks: {
+    onAsyncLoadStart?: (c: Component) => void;
+    onAsyncLoadEnd?: (c: Component) => void;
+    onQueryBind?: (component: Component, key: string) => object | null;
+}): void {
+    if (hooks.onAsyncLoadStart !== undefined) onAsyncLoadStart = hooks.onAsyncLoadStart;
+    if (hooks.onAsyncLoadEnd !== undefined) onAsyncLoadEnd = hooks.onAsyncLoadEnd;
+    if (hooks.onQueryBind !== undefined) onQueryBind = hooks.onQueryBind;
+}
+
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
@@ -383,6 +397,7 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     async trackAsyncLoad(load: (this: Component<N>) => Promise<void | false>): Promise<void> {
+        onAsyncLoadStart?.(this);
         this.addSuspenseCount(1);
         try {
             if (await load.bind(this)() !== false) {
@@ -392,6 +407,7 @@ export class Component<out N extends Node | null = Node | null> {
             this.injectError(e);
         } finally {
             this.addSuspenseCount(-1);
+            onAsyncLoadEnd?.(this);
         }
     }
 

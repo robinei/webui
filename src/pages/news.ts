@@ -1,7 +1,8 @@
-import { Store, HTML, For, type FragmentItem, Suspense, With, When, type DeepReadonly } from '../core';
+import { HTML, For, type FragmentItem, Suspense, With, When, type DeepReadonly } from '../core';
 import { Outlet } from '../routing';
 import { css } from '../css';
 import { newsRoute, newsPostRoute } from '..';
+import { Query, createQueryFamily } from '../query';
 
 const { div, h2, a, span, button, small, hr } = HTML;
 
@@ -33,53 +34,20 @@ interface HNPost {
     children: HNComment[];
 }
 
-class NewsStore extends Store {
-    items: HNHit[] = [];
-
-    async refresh() {
-        const res = await fetch(HN_API);
-        const data = await res.json();
-        this.items = data.hits;
-    }
-}
-
-class PostStore extends Store implements HNPost {
-    title = '';
-    url: string | null = null;
-    author = '';
-    points = 0;
-    created_at = '';
-    children: HNComment[] = [];
-
-    clear() {
-        this.title = '';
-        this.url = null;
-        this.author = '';
-        this.points = 0;
-        this.created_at = '';
-        this.children = [];
-    }
-
-    apply(data: HNPost) {
-        Object.assign(this, data);
-    }
-}
-
-async function fetchPost(id: number) {
-    const res = await fetch(`https://hn.algolia.com/api/v1/items/${id}`);
-    return res.json() as Promise<HNPost>;
-}
-
-export async function initStores(): Promise<Record<string, unknown>> {
+async function fetchFrontPage(): Promise<HNHit[]> {
     const res = await fetch(HN_API);
     const data = await res.json();
-    return { NewsStore: { items: data.hits } };
+    return data.hits;
 }
 
-export async function initPostStores(id: number): Promise<Record<string, unknown>> {
-    const data = await fetchPost(id);
-    return { PostStore: data };
+async function fetchPost(id: number): Promise<HNPost> {
+    const res = await fetch(`https://hn.algolia.com/api/v1/items/${id}`);
+    return res.json();
 }
+
+// Global queries — shared cache, signals accessible anywhere
+const frontPageQuery = new Query('hn-front-page', fetchFrontPage);
+const postQuery = createQueryFamily('hn-post', fetchPost);
 
 const s = css({
     container: {
@@ -170,17 +138,17 @@ export function NewsPage(): FragmentItem {
 }
 
 export function NewsListPage(): FragmentItem {
-    const store = NewsStore.create();
-
     return div(
+        frontPageQuery.bind(),
         button('Refresh', {
             className: s.refreshBtn,
             async onclick() {
-                await store.refresh();
+                await frontPageQuery.refetch();
+                this.updateRoot();
             },
         }),
         For(
-            () => store.items,
+            () => frontPageQuery.data.get() ?? [],
             item => div({ className: s.story },
                 a({
                     className: s.title,
@@ -206,7 +174,7 @@ export function NewsListPage(): FragmentItem {
 }
 
 export function NewsPostPage({ id }: { id(): number }): FragmentItem {
-    const store = PostStore.create();
+    const q = postQuery.bind(id());
 
     function Comment(comment: () => DeepReadonly<HNComment>): FragmentItem {
         return With(comment, c => div({ className: s.comment },
@@ -221,25 +189,27 @@ export function NewsPostPage({ id }: { id(): number }): FragmentItem {
     }
 
     return div(
+        q,
         newsRoute.Link({}, '\u2190 Back'),
-        div({ className: s.postTitle }, () => store.title),
-        When(() => !!store.url, a({ href: () => store.url!, target: '_blank', rel: 'noopener' }, () => store.url!)),
+        div({ className: s.postTitle }, () => q.data.get()?.title ?? ''),
+        When(() => !!(q.data.get()?.url), a({
+            href: () => q.data.get()!.url!,
+            target: '_blank',
+            rel: 'noopener',
+        }, () => q.data.get()!.url!)),
         div({ className: s.postMeta },
-            span(() => `${store.points} points`),
+            span(() => `${q.data.get()?.points ?? 0} points`),
             ' | ',
-            span(() => store.author),
+            span(() => q.data.get()?.author ?? ''),
             ' | ',
-            small(() => timeAgo(store.created_at)),
+            small(() => q.data.get() ? timeAgo(q.data.get()!.created_at) : ''),
         ),
+        When(() => !!q.error.get(), div('Error loading post')),
         hr(),
         For(
-            () => store.children,
+            () => q.data.get()?.children ?? [],
             child => Comment(child),
             child => child.id,
         ),
-    ).addValueLoader(id, async function loadPost(newId) {
-        store.clear();
-        const data = await fetchPost(newId);
-        return () => store.apply(data);
-    });
+    );
 }
