@@ -372,7 +372,7 @@ export class Component<out N extends Node | null = Node | null> {
                 }
             }, { active: false });
             this.addMountListener(() => effect.activate());
-            this.addUnmountListener(() => effect.deactivate());
+            this.addUnmountListener(() => { lastEmittedValue = Nil; effect.deactivate(); });
             return this;
         }
 
@@ -393,6 +393,7 @@ export class Component<out N extends Node | null = Node | null> {
                 boundWatcher(newValue);
             }
         }, true);
+        this.addUnmountListener(() => { lastEmittedValue = Nil; });
         return this;
     }
 
@@ -1388,17 +1389,28 @@ export function Suspense(fallbackFragment: FragmentItem, ...bodyFragment: Fragme
         });
     }
 
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+
     return new Component(null, 'Suspense').appendChildren(bodyComponents).setSuspenseHandler(function suspenseHandler(count) {
         if (count > 0) {
             if (!bodyComponents[0]!.isDetached()) {
                 for (const c of bodyComponents) {
                     c.setDetached(true);
                 }
-                this.appendChildren(fallbackComponents);
+                fallbackTimer = setTimeout(() => {
+                    fallbackTimer = null;
+                    this.appendChildren(fallbackComponents);
+                }, 50);
             }
         } else {
+            if (fallbackTimer !== null) {
+                clearTimeout(fallbackTimer);
+                fallbackTimer = null;
+            }
             if (bodyComponents[0]!.isDetached()) {
-                this.removeChildren(fallbackComponents);
+                if (fallbackComponents.length > 0 && fallbackComponents[0]?.getParent()) {
+                    this.removeChildren(fallbackComponents);
+                }
                 for (const c of bodyComponents) {
                     c.setDetached(false);
                 }

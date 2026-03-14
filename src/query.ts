@@ -1,4 +1,4 @@
-import { Component, onQueryBind } from './core';
+import { Component, onQueryBind, type Value } from './core';
 import { Signal, Computed, Observable } from './observable';
 
 export interface QueryOptions<K = void> {
@@ -217,8 +217,7 @@ export class Query<T> {
 
 export type QueryFamily<K, T> = {
     signal(key: K): Signal<T | undefined>;
-    bind(key: K): QueryHandle<T>;
-    bind(key: Observable<K>): QueryHandle<T>;
+    bind(key: Value<K>): QueryHandle<T>;
     invalidate(key: K): void;
     clear(key: K): void;
 };
@@ -323,8 +322,9 @@ export function createQueryFamily<K, T>(
             return getOrCreateClient(toCacheKey(key)).data;
         },
 
-        bind(key: K | Observable<K>): QueryHandle<T> {
+        bind(key: Value<K>): QueryHandle<T> {
             if (key instanceof Observable) return bindObservable(key);
+            if (typeof key === 'function') return bindObservable(new Computed(key as () => K, { polled: true }));
             return bindConcrete(key as K);
         },
 

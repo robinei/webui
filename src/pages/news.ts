@@ -46,12 +46,13 @@ async function fetchPost(id: number): Promise<HNPost> {
 }
 
 // Global queries — shared cache, signals accessible anywhere
-const frontPageQuery = new Query('hn-front-page', fetchFrontPage);
-const postQuery = createQueryFamily('hn-post', fetchPost);
+const frontPageQuery = new Query('hn-front-page', fetchFrontPage, { staleTime: 5_000 });
+const postQuery = createQueryFamily('hn-post', fetchPost, { staleTime: 5_000 });
 
 const s = css({
     container: {
         maxWidth: '800px',
+        width: '100%',
         margin: '0 auto',
     },
     header: {
@@ -174,7 +175,7 @@ export function NewsListPage(): FragmentItem {
 }
 
 export function NewsPostPage({ id }: { id(): number }): FragmentItem {
-    const q = postQuery.bind(id());
+    const q = postQuery.bind(id);
 
     function Comment(comment: () => DeepReadonly<HNComment>): FragmentItem {
         return With(comment, c => div({ className: s.comment },
