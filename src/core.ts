@@ -144,6 +144,7 @@ export class Component<out N extends Node | null = Node | null> {
     private mountedListeners: ThinVec<() => void | Promise<void>>;
     private unmountListeners: ThinVec<() => void>;
     private updateListeners: ThinVec<() => void | false>;
+    private hasUpdaters: boolean;
 
     private unhandledError: unknown | undefined;
     private errorHandler: ((error: unknown) => boolean) | undefined;
@@ -169,6 +170,7 @@ export class Component<out N extends Node | null = Node | null> {
         this.mountedListeners = undefined;
         this.unmountListeners = undefined;
         this.updateListeners = undefined;
+        this.hasUpdaters = false;
 
         this.unhandledError = undefined;
         this.errorHandler = undefined;
@@ -348,7 +350,9 @@ export class Component<out N extends Node | null = Node | null> {
 
     addUpdateListener(listener: (this: Component<N>) => void | false, invokeNow = false): Component<N> {
         const boundListener = listener.bind(this);
+        const wasEmpty = !this.updateListeners;
         this.updateListeners = tvPush(this.updateListeners, boundListener);
+        if (wasEmpty) this.propagateHasUpdaters();
         if (this.mounted && invokeNow) {
             try {
                 boundListener();
@@ -527,6 +531,8 @@ export class Component<out N extends Node | null = Node | null> {
         child.nextSibling = before;
         child.parent = this;
 
+        if (child.hasUpdaters) this.propagateHasUpdaters();
+
         if (child.suspenseCount && !child.suspenseHandler) {
             // Propagate pre-existing suspense counts before doMount. Any suspense added
             // during doMount (via trackAsyncLoad) propagates naturally through the parent link.
@@ -587,6 +593,8 @@ export class Component<out N extends Node | null = Node | null> {
                 child.removeNodesFrom(container);
             }
         }
+
+        if (child.hasUpdaters) this.propagateClearHasUpdaters();
 
         if (child.suspenseCount && !child.suspenseHandler) {
             // child component doesn't have a suspense handler and thus will have spilled its suspense count up to us, so we must subtract it.
@@ -930,7 +938,7 @@ export class Component<out N extends Node | null = Node | null> {
             }
 
             for (let c = component.lastChild; c; c = c.prevSibling) {
-                if (c.updateListeners || c.firstChild) {
+                if (c.hasUpdaters) {
                     stack.push(c);
                 }
             }
@@ -1046,6 +1054,29 @@ export class Component<out N extends Node | null = Node | null> {
                     c.removeNodesFrom(container);
                 }
             }
+        }
+    }
+
+    private propagateHasUpdaters(): void {
+        for (let c: Component | undefined = this; c; c = c.parent) {
+            if (c.hasUpdaters) break;
+            c.hasUpdaters = true;
+        }
+    }
+
+    private recomputeHasUpdaters(): boolean {
+        if (this.updateListeners) return true;
+        for (let c = this.firstChild; c; c = c.nextSibling) {
+            if (c.hasUpdaters) return true;
+        }
+        return false;
+    }
+
+    private propagateClearHasUpdaters(): void {
+        for (let c: Component | undefined = this; c; c = c.parent) {
+            if (!c.hasUpdaters) break;
+            if (c.recomputeHasUpdaters()) break;
+            c.hasUpdaters = false;
         }
     }
 
