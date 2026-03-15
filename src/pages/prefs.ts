@@ -49,11 +49,11 @@ export function PreferencesListPage(): FragmentItem {
     return ul(
         For(preferences, function renderPrefListEntry(pref) {
             return li(
-                () => pref().name,
+                pref.name,
                 ': ',
-                () => pref().value,
+                pref.value,
                 ' ',
-                editPrefRoute.Link({ name: pref().name }, 'edit'),
+                editPrefRoute.Link({ name: pref.name }, 'edit'),
             );
         })
     );

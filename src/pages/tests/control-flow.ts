@@ -160,7 +160,7 @@ export const controlFlowSuite: TestSuite = {
             run() {
                 withContainer(container => {
                     const items = [{ id: 1, text: 'one' }, { id: 2, text: 'two' }, { id: 3, text: 'three' }];
-                    const comp = For(items, item => span(() => item().text), item => item.id);
+                    const comp = For(items, item => span(item.text), item => item.id);
                     container.appendChild(comp);
                     assertEqual(container.node.textContent, 'onetwothree');
                 });

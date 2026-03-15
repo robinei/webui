@@ -178,7 +178,7 @@ export class Signal<T> extends Observable<T> {
 }
 
 
-class DelegatedSignal<T> extends Signal<T> {
+export class DelegatedSignal<T> extends Signal<T> {
     constructor(private readonly observable: Observable<T>, private readonly modifyFunc: (f: (v: T) => T) => T) {
         super(undefined as any);
     }
@@ -195,6 +195,7 @@ class DelegatedSignal<T> extends Signal<T> {
         return this.modifyFunc(f);
     }
 }
+
 
 
 export interface ComputedOptions extends ObservableOptions {
@@ -342,13 +343,15 @@ export class Effect extends Computed<void> {
 }
 
 
-const observableProxySymbol = Symbol("isProxy")
+const observableProxySymbol = Symbol("isObservableProxy")
+const signalProxySymbol = Symbol("isSignalProxy")
 
 export type ObservableProxy<T> = (T extends object ? Observable<T> & {
     readonly [K in keyof T as K extends string | number ? (T[K] extends Function ? never : K) : never]-?: ObservableProxy<T[K]>;
 } : Observable<T>) & { _proxyBrand: string };
 
 export function observableProxy<T extends object>(object: Observable<T>): ObservableProxy<T> {
+    if ((object as any)[observableProxySymbol]) return object as unknown as ObservableProxy<T>;
     const cache: { [key: string]: unknown } = {
         get: object.get.bind(object),
         requiresPolling: object.requiresPolling.bind(object),
@@ -373,6 +376,7 @@ export type SignalProxy<T> = (T extends object ? Signal<T> & {
 } : Signal<T>) & { _proxyBrand: string };
 
 export function signalProxy<T extends object>(object: Signal<T>): SignalProxy<T> {
+    if ((object as any)[signalProxySymbol]) return object as unknown as SignalProxy<T>;
     const cache: { [key: string]: unknown } = {
         get: object.get.bind(object),
         requiresPolling: object.requiresPolling.bind(object),
@@ -384,6 +388,7 @@ export function signalProxy<T extends object>(object: Signal<T>): SignalProxy<T>
         get(_, key) {
             if (typeof key === 'symbol') {
                 if (key === observableProxySymbol) return true;
+                if (key === signalProxySymbol) return true;
                 return undefined;
             }
             return cache[key] ??= signalProxy(new DelegatedSignal(

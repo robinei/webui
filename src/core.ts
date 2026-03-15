@@ -1,5 +1,5 @@
 import { longestIncreasingSubsequence, type WritableKeys, errorDescription, isPlainObject, type ThinVec, tvPush, tvForEach } from './util';
-import { Observable, Effect } from './observable';
+import { Observable, Effect, Signal, DelegatedSignal, observableProxy, signalProxy, type ObservableProxy, type SignalProxy } from './observable';
 
 export let onAsyncLoadStart: ((c: Component) => void) | undefined;
 export let onAsyncLoadEnd: ((c: Component) => void) | undefined;
@@ -270,7 +270,7 @@ export class Component<out N extends Node | null = Node | null> {
         throw new Error('context not provided: ' + context.name);
     }
 
-    addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: Component<N>, ev: GlobalEventHandlersEventMap[K]) => void | Promise<void>): Component<N> {
+    addEventListener<K extends keyof GlobalEventHandlersEventMap>(type: K, listener: (this: Component<N>, ev: GlobalEventHandlersEventMap[K]) => void | false | Promise<void>): Component<N> {
         const self = this;
         if (!self.node) {
             throw new Error('addEventListener called on node-less component');
@@ -278,7 +278,7 @@ export class Component<out N extends Node | null = Node | null> {
         const boundListener = listener.bind(self);
         self.node.addEventListener(type, function listenerInvoker(ev): void {
             suppressingUpdates = true;
-            let result: void | Promise<void>;
+            let result: void | false | Promise<void>;
             try {
                 result = boundListener(ev as GlobalEventHandlersEventMap[K]);
             } catch (e) {
@@ -287,7 +287,9 @@ export class Component<out N extends Node | null = Node | null> {
                 return;
             }
             suppressingUpdates = false;
-            if (result instanceof Promise) {
+            if (result === false) {
+                // do nothing
+            } else if (result instanceof Promise) {
                 self.trackAsyncLoad(() => result as Promise<void>);
             } else {
                 self.updateRoot();
@@ -1303,28 +1305,112 @@ export function Else(_: unknown): true {
     return true;
 }
 
-export function For<T extends object>(itemsValue: Value<ReadonlyArray<T>>, renderFunc: (getItem: () => T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null> {
+export function For<T extends object>(items: ReadonlyArray<T>, renderFunc: (item: T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null>;
+export function For<T extends object>(items: () => ReadonlyArray<T>, renderFunc: (getItem: () => T) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null>;
+export function For<T extends object>(items: Signal<T[]>, renderFunc: (item: SignalProxy<T>) => FragmentItem, keyFunc: (item: T) => unknown): Component<null>;
+export function For<T extends object>(items: Observable<ReadonlyArray<T>>, renderFunc: (item: ObservableProxy<T>) => FragmentItem, keyFunc?: (item: T) => unknown): Component<null>;
+export function For<T extends object>(itemsValue: Value<ReadonlyArray<T>>, renderFunc: ((item: T) => FragmentItem) | ((getItem: () => T) => FragmentItem) | ((item: SignalProxy<T>) => FragmentItem) | ((item: ObservableProxy<T>) => FragmentItem), keyFunc?: (item: T) => unknown): Component<null> {
     const keyOf = keyFunc ?? (item => item);
+    if (isStaticValue(itemsValue)) {
+        if (keyFunc) {
+            return forDirectKeyed(itemsValue, renderFunc as (item: T) => FragmentItem, keyFunc);
+        }
+        return forDirect(itemsValue, renderFunc as (item: T) => FragmentItem);
+    } else if (itemsValue instanceof Signal) {
+        return forSignal(itemsValue, renderFunc as (item: SignalProxy<T>) => FragmentItem, keyOf);
+    } else if (itemsValue instanceof Observable) {
+        return forObservable(itemsValue, renderFunc as (item: ObservableProxy<T>) => FragmentItem, keyOf);
+    } else {
+        return forThunk(itemsValue, renderFunc as (getItem: () => T) => FragmentItem, keyOf);
+    }
+}
+
+
+function forDirect<T extends object>(items: ReadonlyArray<T>, renderFunc: (item: T) => FragmentItem): Component<null> {
+    let fragmentMap = new Map<unknown, Component[]>();
+
+    return new Component<null>(null, 'For').addValueWatcher(() => items, function onForItemsChanged(arr) {
+        // Fast path: check live children match arr by identity, no lambda needed.
+        let c: Component | undefined = this.getFirstChild();
+        let match = true;
+        outer: for (const item of arr) {
+            const frag = fragmentMap.get(item);
+            if (!frag) { match = false; break; }
+            for (const child of frag) {
+                if (child !== c) { match = false; break outer; }
+                c = c!.getNextSibling();
+            }
+        }
+        if (match && c === undefined) return;
+        // Structural change: full reconciliation
+        const newFragmentMap = new Map<unknown, Component[]>();
+        const children: Component[] = [];
+        for (const item of arr) {
+            const fragment = fragmentMap.get(item) ?? flattenFragment(renderFunc(item));
+            newFragmentMap.set(item, fragment);
+            for (const c of fragment) children.push(c);
+        }
+        fragmentMap = newFragmentMap;
+        this.replaceChildren(children);
+    }, false);
+}
+
+function forDirectKeyed<T extends object>(items: ReadonlyArray<T>, renderFunc: (item: T) => FragmentItem, keyOf: (item: T) => unknown): Component<null> {
+    let itemByKey = new Map<unknown, T>();
+    let fragmentMap = new Map<unknown, Component[]>();
+    let lastKeys: unknown[] = [];
+    let lastItems: T[] | undefined;
+
+    return new Component<null>(null, 'For').addValueWatcher(() => items, function onForItemsChanged(arr) {
+        // Fast path: same item references in same key order — zero writes.
+        if (lastItems && arr.length === lastItems.length) {
+            let same = true;
+            for (let i = 0; i < arr.length; ++i) {
+                if (arr[i] !== lastItems[i] || keyOf(arr[i]!) !== lastKeys[i]) { same = false; break; }
+            }
+            if (same) return;
+        }
+        // Structural change: full reconciliation
+        const newItemByKey = new Map<unknown, T>();
+        const newFragmentMap = new Map<unknown, Component[]>();
+        const newKeys: unknown[] = [];
+        const children: Component[] = [];
+        for (const item of arr) {
+            const key = keyOf(item);
+            newItemByKey.set(key, item);
+            newKeys.push(key);
+            // Reuse fragment only when same item reference (mutable, not swapped out).
+            const fragment = itemByKey.get(key) === item
+                ? fragmentMap.get(key)!
+                : flattenFragment(renderFunc(item));
+            newFragmentMap.set(key, fragment);
+            for (const c of fragment) children.push(c);
+        }
+        lastItems = arr.slice();
+        lastKeys = newKeys;
+        itemByKey = newItemByKey;
+        fragmentMap = newFragmentMap;
+        this.replaceChildren(children);
+    }, false);
+}
+
+function forThunk<T extends object>(itemsValue: () => ReadonlyArray<T>, renderFunc: (getItem: () => T) => FragmentItem, keyOf: (item: T) => unknown): Component<null> {
     const itemsByKey = new Map<unknown, T>();
     let fragmentMap = new Map<unknown, Component[]>();
     let lastKeys: unknown[] = [];
     let lastItems: T[] | undefined;
 
-    return new Component(null, 'For').addValueWatcher(itemsValue, function onForItemsChanged(items) {
-        // Fast path: shallow compare with last reconciled items
+    return new Component<null>(null, 'For').addValueWatcher(itemsValue, function onForItemsChanged(items) {
+        // Fast path: zero writes. When items[i] === lastItems[i], itemsByKey is already
+        // correct (same object). When a reference changes, we fall through and update.
         if (lastItems && items.length === lastItems.length) {
             let same = true;
             for (let i = 0; i < items.length; ++i) {
-                const key = keyOf(items[i]!);
-                if (items[i] !== lastItems[i] || key !== lastKeys[i]) {
-                    same = false;
-                    break;
-                }
+                if (items[i] !== lastItems[i] || keyOf(items[i]!) !== lastKeys[i]) { same = false; break; }
             }
-            if (same) return; // zero writes!
+            if (same) return;
         }
-
-        // Slow path: reconcile and snapshot
+        // Structural change: full reconciliation
         itemsByKey.clear();
         const newFragmentMap = new Map<unknown, Component[]>();
         const newKeys: unknown[] = [];
@@ -1335,9 +1421,7 @@ export function For<T extends object>(itemsValue: Value<ReadonlyArray<T>>, rende
             newKeys.push(key);
             const fragment = fragmentMap.get(key) ?? flattenFragment(renderFunc(() => {
                 const item = itemsByKey.get(key);
-                if (item === undefined) {
-                    throw new Error('missing item in For itemsByKey');
-                }
+                if (item === undefined) throw new Error('missing item in For itemsByKey');
                 return item;
             }));
             newFragmentMap.set(key, fragment);
@@ -1345,6 +1429,109 @@ export function For<T extends object>(itemsValue: Value<ReadonlyArray<T>>, rende
         }
         lastItems = items.slice();
         lastKeys = newKeys;
+        fragmentMap = newFragmentMap;
+        this.replaceChildren(children);
+    }, false);
+}
+
+function forSignal<T extends object>(itemsValue: Signal<ReadonlyArray<T>>, renderFunc: (item: SignalProxy<T>) => FragmentItem, keyOf: (item: T) => unknown): Component<null> {
+    const signalByKey = new Map<unknown, Signal<T>>();
+    let fragmentMap = new Map<unknown, Component[]>();
+
+    return new Component<null>(null, 'For').addValueWatcher(itemsValue, function onForItemsChanged(items) {
+        // Fast path: structure unchanged — update inner signals, proxy effects propagate.
+        let c: Component | undefined = this.getFirstChild();
+        let match = true;
+        outer: for (const item of items) {
+            const frag = fragmentMap.get(keyOf(item));
+            if (!frag) { match = false; break; }
+            for (const child of frag) {
+                if (child !== c) { match = false; break outer; }
+                c = c!.getNextSibling();
+            }
+        }
+        if (match && c === undefined) {
+            for (const item of items) {
+                const sig = signalByKey.get(keyOf(item))!;
+                if (sig.get() !== item) sig.set(item);
+            }
+            return;
+        }
+        // Structural change: full reconciliation
+        const newFragmentMap = new Map<unknown, Component[]>();
+        const children: Component[] = [];
+        for (const item of items) {
+            const key = keyOf(item);
+            let fragment = fragmentMap.get(key);
+            if (!fragment) {
+                const inner = new Signal(item);
+                // Writes from the render function route back through the root Signal.
+                const delegated = new DelegatedSignal(inner, f => {
+                    const newItem = f(inner.get());
+                    itemsValue.modify(arr => arr.map(i => keyOf(i) === key ? newItem : i));
+                    return newItem;
+                });
+                signalByKey.set(key, inner);
+                fragment = flattenFragment(renderFunc(signalProxy(delegated)));
+            } else {
+                const sig = signalByKey.get(key)!;
+                if (sig.get() !== item) sig.set(item);
+            }
+            newFragmentMap.set(key, fragment);
+            for (const c of fragment) children.push(c);
+        }
+        for (const key of signalByKey.keys()) {
+            if (!newFragmentMap.has(key)) signalByKey.delete(key);
+        }
+        fragmentMap = newFragmentMap;
+        this.replaceChildren(children);
+    }, false);
+}
+
+function forObservable<T extends object>(itemsValue: Observable<ReadonlyArray<T>>, renderFunc: (item: ObservableProxy<T>) => FragmentItem, keyOf: (item: T) => unknown): Component<null> {
+    const signalByKey = new Map<unknown, Signal<T>>();
+    let fragmentMap = new Map<unknown, Component[]>();
+
+    return new Component<null>(null, 'For').addValueWatcher(itemsValue, function onForItemsChanged(items) {
+        // Fast path: structure unchanged — only item values may have changed.
+        // Update signals directly; per-item proxy effects handle any DOM updates.
+        let c: Component | undefined = this.getFirstChild();
+        let match = true;
+        outer: for (const item of items) {
+            const frag = fragmentMap.get(keyOf(item));
+            if (!frag) { match = false; break; }
+            for (const child of frag) {
+                if (child !== c) { match = false; break outer; }
+                c = c!.getNextSibling();
+            }
+        }
+        if (match && c === undefined) {
+            for (const item of items) {
+                const sig = signalByKey.get(keyOf(item))!;
+                if (sig.get() !== item) sig.set(item);
+            }
+            return;
+        }
+        // Structural change: full reconciliation
+        const newFragmentMap = new Map<unknown, Component[]>();
+        const children: Component[] = [];
+        for (const item of items) {
+            const key = keyOf(item);
+            let fragment = fragmentMap.get(key);
+            if (!fragment) {
+                const sig = new Signal(item);
+                signalByKey.set(key, sig);
+                fragment = flattenFragment(renderFunc(observableProxy(sig)));
+            } else {
+                const sig = signalByKey.get(key)!;
+                if (sig.get() !== item) sig.set(item);
+            }
+            newFragmentMap.set(key, fragment);
+            for (const c of fragment) children.push(c);
+        }
+        for (const key of signalByKey.keys()) {
+            if (!newFragmentMap.has(key)) signalByKey.delete(key);
+        }
         fragmentMap = newFragmentMap;
         this.replaceChildren(children);
     }, false);

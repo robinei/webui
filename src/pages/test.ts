@@ -1,8 +1,9 @@
 import { errorDescription, asyncDelay } from '../util';
 import {
     type FragmentItem,
-    HTML, If, Repeat, Unsuspense, ErrorBoundary, Lazy, Async, Match, Else, Component, Portal, When
+    HTML, If, Repeat, Unsuspense, ErrorBoundary, Lazy, Async, Match, Else, Component, Portal, When, For
 } from '../core';
+import { Signal } from '../observable';
 import { css } from '../css';
 
 const { div, span, br, button, table, tr, td, input, pre, b, p } = HTML;
@@ -38,6 +39,57 @@ const styles = css({
 });
 
 
+function ForObservableDemo(): FragmentItem {
+    type Tag = { id: number; label: string };
+    type Item = { id: number; name: string; score: number; tags: Tag[] };
+    let nextId = 4;
+    let nextTagId = 10;
+    const items = new Signal<Item[]>([
+        { id: 1, name: 'Alice', score: 10, tags: [{ id: 1, label: 'admin' }, { id: 2, label: 'user' }] },
+        { id: 2, name: 'Bob', score: 7, tags: [{ id: 3, label: 'user' }] },
+        { id: 3, name: 'Carol', score: 5, tags: [] },
+    ]);
+    return div(
+        div('For + Observable proxy — fields and nested arrays update independently:'),
+        For(items,
+            item => div(
+                item.name,
+                ' — score: ',
+                item.score,
+                ' [',
+                // Nested For: item.tags is SignalProxy<Tag[]> — dispatches to forSignal.
+                // Writes from tag render functions cascade back to the root items Signal.
+                For(item.tags,
+                    tag => span(tag.label, ' '),
+                    tag => tag.id,
+                ),
+                '] ',
+                button('+1', {
+                    onclick() { item.score.modify(s => s + 1); return false; }
+                }),
+                ' ',
+                button('+tag', {
+                    onclick() {
+                        item.tags.modify(tags => [...tags, { id: nextTagId++, label: `t${nextTagId}` }]);
+                        return false;
+                    }
+                }),
+                ' ',
+                button('remove', {
+                    onclick() {
+                        items.modify(arr => arr.filter(i => i.id !== item.id.get()));
+                        return false;
+                    }
+                }),
+            ),
+            item => item.id,
+        ),
+        button('Add item', {
+            onclick() { items.modify(arr => [...arr, { id: nextId, name: `Item ${nextId++}`, score: 0, tags: [] }]); },
+        }),
+    );
+}
+
 export function TestPage(): FragmentItem {
     return ErrorBoundary(ErrorFallback, function tryTestComponent() {
         const [cb1, checked1] = CheckBox();
@@ -51,6 +103,7 @@ export function TestPage(): FragmentItem {
         let highlight = false;
 
         return [
+            ForObservableDemo(),
             PortalDemo(),
 
             div({ className: styles.styledBox },
