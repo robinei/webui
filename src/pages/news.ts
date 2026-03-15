@@ -141,12 +141,10 @@ export function NewsPage(): FragmentItem {
 export function NewsListPage(): FragmentItem {
     return div(
         frontPageQuery.bind(),
-        button('Refresh', {
+        button(() => frontPageQuery.loading.get() ? 'Refreshing' : 'Refresh', {
             className: s.refreshBtn,
-            async onclick() {
-                await frontPageQuery.refetch();
-                this.updateRoot();
-            },
+            disabled: () => frontPageQuery.loading.get(),
+            onclick() { frontPageQuery.refetch(); },
         }),
         For(
             () => frontPageQuery.data.get() ?? [],
