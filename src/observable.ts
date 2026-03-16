@@ -1,6 +1,12 @@
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
+// A Sentinel wraps either the Nil symbol (meaning "uncomputed / invalidated") or a thrown error.
+type Sentinel = { readonly [Nil]: unknown };
+const NIL_SENTINEL: Sentinel = { [Nil]: Nil };
+const isSentinel = (v: unknown): v is Sentinel =>
+    v !== null && typeof v === 'object' && (Nil as symbol) in (v as object);
+
 const defaultEquals = (a: unknown, b: unknown) => a === b;
 
 let currentContext: Observable<unknown> | undefined;
@@ -207,8 +213,8 @@ export class Computed<T> extends Observable<T> {
     private readonly depKeys: Observable<unknown>[] = [];
     private readonly depVersions: number[] = [];
     private isPolled = false;
-    private value: T | Nil = Nil;
-    private lastValue: T | Nil = Nil;
+    private value: T | Sentinel = NIL_SENTINEL;
+    private lastValue: T | Sentinel = NIL_SENTINEL;
 
     constructor(private readonly func: (lastValue?: T) => T, private readonly options?: ComputedOptions) {
         super(options);
@@ -234,49 +240,67 @@ export class Computed<T> extends Observable<T> {
 
     private areDependenciesChanged(): boolean {
         for (let i = 0; i < this.depKeys.length; i++) {
-            if (this.depKeys[i]!.hasChanged(this.depVersions[i]!)) return true;
+            try {
+                if (this.depKeys[i]!.hasChanged(this.depVersions[i]!)) return true;
+            } catch {
+                return true; // dep threw during evaluation — treat as changed, let func observe it
+            }
         }
         return false;
     }
 
     override get(): T {
-        if (this.value === Nil || this.isPolled) {
+        if (isSentinel(this.value) || this.isPolled) {
             const previousContext = currentContext;
             currentContext = this;
             try {
-                if (this.lastValue !== Nil && !this.isPolled && !this.areDependenciesChanged()) {
-                    this.value = this.lastValue;
-                } else {
-                    for (let i = 0; i < this.depVersions.length; i++) {
-                        this.depVersions[i] = -1;
-                    }
-                    this.isPolled = !!this.options?.polled;
-                    const newValue = this.func(this.lastValue === Nil ? undefined : this.lastValue);
-                    const equalsOpt = this.options?.equals;
-                    if (this.lastValue === Nil || equalsOpt === false || !(equalsOpt ?? defaultEquals)(this.lastValue, newValue)) {
-                        this.version++;
-                    }
-                    this.lastValue = this.value = newValue;
-                    this.isPolled ||= this.depKeys.length === 0; // assume a 0-dependency Computed needs to be polled (it can't be invalidated)
-                    let w = 0;
-                    for (let r = 0; r < this.depKeys.length; r++) {
-                        if (this.depVersions[r] !== -1) {
-                            this.depKeys[w] = this.depKeys[r]!;
-                            this.depVersions[w] = this.depVersions[r]!;
-                            w++;
-                        } else {
-                            this.unlinkDependency(this.depKeys[r]!);
-                        }
-                    }
-                    this.depKeys.length = w;
-                    this.depVersions.length = w;
+                if (this.isPolled || this.lastValue === NIL_SENTINEL || this.areDependenciesChanged()) {
+                    this.lastValue = this.value = this.evalFunc();
+                } else if (this.value === NIL_SENTINEL) {
+                    this.value = this.lastValue; // restore after invalidation; error sentinel stays as-is
                 }
             } finally {
                 currentContext = previousContext;
             }
         }
         this.addContextAsDependent();
+        if (isSentinel(this.value)) {
+            throw this.value[Nil];
+        }
         return this.value;
+    }
+
+    private evalFunc(): T | Sentinel {
+        for (let i = 0; i < this.depVersions.length; i++) {
+            this.depVersions[i] = -1;
+        }
+        this.isPolled = !!this.options?.polled;
+        let result: T | Sentinel;
+        try {
+            const prevValue = isSentinel(this.lastValue) ? undefined : this.lastValue;
+            const newValue = this.func(prevValue);
+            const equalsOpt = this.options?.equals;
+            if (isSentinel(this.lastValue) || equalsOpt === false || !(equalsOpt ?? defaultEquals)(this.lastValue, newValue)) {
+                this.version++;
+            }
+            this.isPolled ||= this.depKeys.length === 0; // assume a 0-dependency Computed needs to be polled (it can't be invalidated)
+            result = newValue;
+        } catch (e) {
+            result = { [Nil]: e };
+        }
+        let w = 0;
+        for (let r = 0; r < this.depKeys.length; r++) {
+            if (this.depVersions[r] !== -1) {
+                this.depKeys[w] = this.depKeys[r]!;
+                this.depVersions[w] = this.depVersions[r]!;
+                w++;
+            } else {
+                this.unlinkDependency(this.depKeys[r]!);
+            }
+        }
+        this.depKeys.length = w;
+        this.depVersions.length = w;
+        return result;
     }
 
     override requiresPolling(): boolean {
@@ -284,8 +308,8 @@ export class Computed<T> extends Observable<T> {
     }
 
     protected override invalidate(): void {
-        if (this.value !== Nil) {
-            this.value = Nil;
+        if (this.value !== NIL_SENTINEL) {
+            this.value = NIL_SENTINEL;
             super.invalidate(); // invalidate dependents
         }
     }

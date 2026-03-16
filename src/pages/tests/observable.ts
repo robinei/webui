@@ -687,6 +687,123 @@ export const observableSuite: TestSuite = {
             },
         },
 
+        // ─── Computed: error handling ─────────────────────────────────────────
+
+        {
+            name: 'Computed: get() propagates thrown errors',
+            run() {
+                const err = new Error('boom');
+                const c = new Computed(() => { throw err; });
+                assertThrows(() => c.get());
+                try { c.get(); } catch (e) { assert(e === err); }
+            },
+        },
+        {
+            name: 'Computed: error is cached — func not re-run when deps unchanged',
+            run() {
+                const s = new Signal(1);
+                let runs = 0;
+                const c = new Computed(() => { runs++; if (s.get() < 5) throw new Error('small'); return s.get(); });
+                assertThrows(() => c.get());
+                assertEqual(runs, 1);
+                assertThrows(() => c.get()); // deps unchanged — should not re-run
+                assertEqual(runs, 1);
+            },
+        },
+        {
+            name: 'Computed: retries and recovers when dep changes after error',
+            run() {
+                const s = new Signal(1);
+                const c = new Computed(() => { if (s.get() < 5) throw new Error('small'); return s.get() * 2; });
+                assertThrows(() => c.get());
+                s.set(10);
+                assertEqual(c.get(), 20);
+            },
+        },
+        {
+            name: 'Computed: stale deps unlinked after error',
+            run() {
+                let deactivatedB = false;
+                const a = new Signal(1);
+                const b = new Signal(100, { deactivated() { deactivatedB = true; } });
+                let shouldThrow = false;
+                // First run: reads a and b. Second run: throws before reading either.
+                const c = new Computed(() => {
+                    if (shouldThrow) throw new Error('boom');
+                    return a.get() + b.get();
+                });
+                new Effect(() => { try { c.get(); } catch {} });
+                assert(!deactivatedB, 'b should be active after first successful run');
+                shouldThrow = true;
+                a.set(2); // triggers recompute of c — throws before reading a or b → both unlinked
+                assert(deactivatedB, 'b should be deactivated after error unlinks it');
+            },
+        },
+        {
+            name: 'Effect: re-triggered when throwing Computed dep changes',
+            run() {
+                const s = new Signal(1);
+                const c = new Computed(() => { if (s.get() < 5) throw new Error('small'); return s.get() * 2; });
+                let runs = 0;
+                let lastResult: number | null = null;
+                new Effect(() => {
+                    runs++;
+                    try { lastResult = c.get(); } catch { lastResult = null; }
+                });
+                assertEqual(runs, 1);
+                assertEqual(lastResult, null); // c threw on first run
+
+                s.set(10); // c's dep changes — effect must be re-triggered
+                assertEqual(runs, 2);
+                assertEqual(lastResult, 20);
+            },
+        },
+        {
+            name: 'Effect: re-triggered after error, then stable once recovered',
+            run() {
+                const s = new Signal(1);
+                const c = new Computed(() => { if (s.get() < 5) throw new Error('small'); return s.get() * 2; });
+                let runs = 0;
+                new Effect(() => { runs++; try { c.get(); } catch {} });
+                assertEqual(runs, 1);
+
+                s.set(10); // recovers
+                assertEqual(runs, 2);
+
+                s.set(12); // further changes still propagate normally
+                assertEqual(runs, 3);
+
+                s.set(12); // same value — no re-run
+                assertEqual(runs, 3);
+            },
+        },
+        {
+            name: 'Computed: error propagates through a Computed chain',
+            run() {
+                const s = new Signal(1);
+                const c1 = new Computed(() => { if (s.get() < 5) throw new Error('small'); return s.get(); });
+                const c2 = new Computed(() => c1.get() * 2);
+                assertThrows(() => c2.get());
+                s.set(10);
+                assertEqual(c2.get(), 20);
+            },
+        },
+        {
+            name: 'Computed: invalidate() propagates through error state',
+            run() {
+                const s = new Signal(1);
+                const c = new Computed(() => { if (s.get() < 5) throw new Error('small'); return s.get() * 2; });
+                let runs = 0;
+                new Effect(() => { runs++; try { c.get(); } catch {} });
+                assertEqual(runs, 1);
+
+                // Multiple dep changes should each re-trigger the effect
+                s.set(2); assertEqual(runs, 2); // still errors
+                s.set(3); assertEqual(runs, 3); // still errors
+                s.set(10); assertEqual(runs, 4); // recovers
+            },
+        },
+
         // ─── Constant ────────────────────────────────────────────────────────
 
         {
