@@ -205,8 +205,8 @@ export function tvRemove<T>(vec: ThinVec<T>, value: T): ThinVec<T> {
         return vec; // not found
     }
     switch (vec.length) {
-    case 1: return undefined;
-    case 2: return i === 0 ? vec[1]! : vec[0]!;
+        case 1: return undefined;
+        case 2: return i === 0 ? vec[1]! : vec[0]!;
     }
     vec.splice(i, 1);
     return vec;
@@ -242,47 +242,6 @@ export function tvForEach<T>(vec: ThinVec<T>, func: (value: T) => void | boolean
 
 
 
-
-/**
- * Returns indices into `arr` that form the longest strictly increasing subsequence.
- * O(n log n) time, O(n) space.
- */
-export function longestIncreasingSubsequence(arr: number[]): number[] {
-    const n = arr.length;
-    if (n === 0) return [];
-
-    // tails[i] = index in arr of the smallest tail of all increasing subsequences of length i+1
-    const tails: number[] = [];
-    // prev[i] = index in arr of the predecessor of arr[i] in the best subsequence ending at i
-    const prev = new Int32Array(n).fill(-1);
-
-    for (let i = 0; i < n; i++) {
-        const val = arr[i]!;
-        // Binary search: find leftmost position in tails where arr[tails[pos]] >= val
-        let lo = 0, hi = tails.length;
-        while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (arr[tails[mid]!]! < val) {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        if (lo > 0) {
-            prev[i] = tails[lo - 1]!;
-        }
-        tails[lo] = i;
-    }
-
-    // Reconstruct
-    const result = new Array<number>(tails.length);
-    let idx = tails[tails.length - 1]!;
-    for (let i = tails.length - 1; i >= 0; i--) {
-        result[i] = idx;
-        idx = prev[idx]!;
-    }
-    return result;
-}
 
 
 export function createDirtyTracker() {

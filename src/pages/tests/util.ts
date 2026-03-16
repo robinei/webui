@@ -1,8 +1,7 @@
 import { type TestSuite, assert, assertEqual } from './runner';
 import {
-    deepEqual, arraysEqual,
+    deepEqual,
     type ThinVec, tvLength, tvLast, tvPush, tvPop, tvRemove,
-    longestIncreasingSubsequence,
 } from '../../util';
 
 export const utilSuite: TestSuite = {
@@ -95,64 +94,6 @@ export const utilSuite: TestSuite = {
                 vec = tvPop(vec);
                 assertEqual(tvLength(vec), 0);
                 assertEqual(tvLast(vec), undefined);
-            },
-        },
-
-        // LIS tests
-        {
-            name: 'LIS: empty array',
-            run() {
-                assert(arraysEqual(longestIncreasingSubsequence([]), []));
-            },
-        },
-        {
-            name: 'LIS: single element',
-            run() {
-                assert(arraysEqual(longestIncreasingSubsequence([5]), [0]));
-            },
-        },
-        {
-            name: 'LIS: already sorted',
-            run() {
-                assert(arraysEqual(longestIncreasingSubsequence([1, 2, 3, 4]), [0, 1, 2, 3]));
-            },
-        },
-        {
-            name: 'LIS: reversed',
-            run() {
-                assertEqual(longestIncreasingSubsequence([4, 3, 2, 1]).length, 1);
-            },
-        },
-        {
-            name: 'LIS: mixed sequence',
-            run() {
-                const arr = [1, 3, 4, 0, 2];
-                const lis = longestIncreasingSubsequence(arr);
-                assertEqual(lis.length, 3);
-                // indices are increasing
-                assert(lis[0]! < lis[1]! && lis[1]! < lis[2]!);
-                // values are increasing
-                for (let i = 1; i < lis.length; i++) {
-                    assert(arr[lis[i]!]! > arr[lis[i - 1]!]!);
-                }
-            },
-        },
-        {
-            name: 'LIS: classic sequence [3,1,4,1,5,9,2,6]',
-            run() {
-                assertEqual(longestIncreasingSubsequence([3, 1, 4, 1, 5, 9, 2, 6]).length, 4);
-            },
-        },
-        {
-            name: 'LIS: all duplicates',
-            run() {
-                assertEqual(longestIncreasingSubsequence([2, 2, 2, 2]).length, 1);
-            },
-        },
-        {
-            name: 'LIS: two interleaved sequences',
-            run() {
-                assertEqual(longestIncreasingSubsequence([0, 8, 1, 9, 2, 10, 3]).length, 4);
             },
         },
     ],

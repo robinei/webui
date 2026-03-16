@@ -1,4 +1,4 @@
-import { longestIncreasingSubsequence, type WritableKeys, errorDescription, isPlainObject, type ThinVec, tvPush, tvForEach } from './util';
+import { type WritableKeys, errorDescription, isPlainObject, type ThinVec, tvPush, tvForEach } from './util';
 import { Observable, Effect, Signal, DelegatedSignal, observableProxy, signalProxy, type ObservableProxy, type SignalProxy } from './observable';
 
 export let onAsyncLoadStart: ((c: Component) => void) | undefined;
@@ -154,6 +154,10 @@ export class Component<out N extends Node | null = Node | null> {
 
     private contextValues: Map<Context<unknown>, unknown> | undefined;
 
+    // Scratch field used by replaceChildren for reconciliation. -1 = not participating,
+    // -2 = stable (in LIS), ≥0 = target index in new children array.
+    private reconcileIdx: number;
+
     constructor(node: N, name?: string) {
         this.node = node;
         this.name = name;
@@ -179,6 +183,8 @@ export class Component<out N extends Node | null = Node | null> {
         this.suspenseHandler = undefined;
 
         this.contextValues = undefined;
+
+        this.reconcileIdx = -1;
     }
 
     getName(): string { return this.name ?? this.node?.nodeName ?? 'Component'; }
@@ -638,26 +644,81 @@ export class Component<out N extends Node | null = Node | null> {
         return this;
     }
 
+    // Move a child to a new position within this component without triggering lifecycle.
+    // Only rewires sibling pointers and repositions DOM nodes — the child stays mounted,
+    // thunks stay evaluated, and hasUpdaters/suspenseCount are unchanged (same parent).
+    private moveChildBefore(child: Component, anchor: Component | undefined): void {
+        // Unlink from current position
+        if (child.prevSibling) {
+            child.prevSibling.nextSibling = child.nextSibling;
+        } else {
+            this.firstChild = child.nextSibling;
+        }
+        if (child.nextSibling) {
+            child.nextSibling.prevSibling = child.prevSibling;
+        } else {
+            this.lastChild = child.prevSibling;
+        }
+
+        // Re-link at new position
+        if (anchor) {
+            child.prevSibling = anchor.prevSibling;
+            child.nextSibling = anchor;
+            if (anchor.prevSibling) {
+                anchor.prevSibling.nextSibling = child;
+            } else {
+                this.firstChild = child;
+            }
+            anchor.prevSibling = child;
+        } else {
+            child.prevSibling = this.lastChild;
+            child.nextSibling = undefined;
+            if (this.lastChild) {
+                this.lastChild.nextSibling = child;
+            } else {
+                this.firstChild = child;
+            }
+            this.lastChild = child;
+        }
+
+        // Move DOM nodes. Child is now re-linked so getInsertionAnchor() reflects the new
+        // position and gives the correct DOM node to insert before.
+        if (!child.detached) {
+            const container = this.getChildContainerNode();
+            if (container) {
+                child.moveNodesInto(container, child.getInsertionAnchor());
+            }
+        }
+    }
+
     replaceChildren(children: Component[]): Component<N> {
         if (!this.firstChild) {
-            return this.appendChildren(children);
+            for (const child of children) {
+                this.insertBefore(child);
+            }
+            return this;
         }
 
-        // Map each new child to its target index
-        const newIndex = new Map<Component, number>();
+        // Mark each new child with its target index (avoids Map allocation)
         for (let i = 0; i < children.length; i++) {
-            newIndex.set(children[i]!, i);
+            children[i]!.reconcileIdx = i;
         }
 
-        // Walk old children: remove those absent from new list, collect new-indices of kept ones
-        const keptNewIndices: number[] = [];
-        const keptChildren: Component[] = [];
+        // Walk old children: remove those absent from new list, collect kept ones.
+        // Track whether kept indices are already ascending — when true (the common case:
+        // partial update, select row, append) we can skip LIS entirely.
+        const keptChildren = Component.keptChildren;
+        keptChildren.length = 0;
+        let sorted = true;
+        let prevReconcileIdx = -1;
         let c = this.firstChild;
         while (c) {
             const next = c.nextSibling;
-            const idx = newIndex.get(c);
-            if (idx !== undefined) {
-                keptNewIndices.push(idx);
+            if (c.reconcileIdx >= 0) {
+                if (c.reconcileIdx < prevReconcileIdx) {
+                    sorted = false;
+                }
+                prevReconcileIdx = c.reconcileIdx;
                 keptChildren.push(c);
             } else {
                 this.removeChild(c);
@@ -665,24 +726,31 @@ export class Component<out N extends Node | null = Node | null> {
             c = next!;
         }
 
-        // Find LIS — these children are already in correct relative order and don't need to move
-        const lisPositions = longestIncreasingSubsequence(keptNewIndices);
-        const stable = new Set<Component>();
-        for (const pos of lisPositions) {
-            stable.add(keptChildren[pos]!);
+        // Fast path: already in order — all kept children are stable, skip LIS
+        if (sorted) {
+            for (const child of keptChildren) {
+                child.reconcileIdx = -2;
+            }
+        } else {
+            Component.markStableLIS(keptChildren);
         }
+        keptChildren.length = 0; // release refs so GC can collect unmounted components
 
-        // Walk new children right-to-left, using stable children as anchors
+        // Walk new children right-to-left, using stable children as anchors.
+        // Clear reconcileIdx as we go so each component is reset for future reconciliations.
         let anchor: Component | undefined;
         for (let i = children.length - 1; i >= 0; i--) {
             const child = children[i]!;
-            if (stable.has(child)) {
+            const idx = child.reconcileIdx;
+            child.reconcileIdx = -1;
+            if (idx === -2) {
                 anchor = child;
             } else {
                 if (child.parent === this) {
-                    this.removeChild(child);
+                    this.moveChildBefore(child, anchor);
+                } else {
+                    this.insertBefore(child, anchor);
                 }
-                this.insertBefore(child, anchor);
                 anchor = child;
             }
         }
@@ -1059,6 +1127,25 @@ export class Component<out N extends Node | null = Node | null> {
         }
     }
 
+    // Like insertNodesInto but for components already in the DOM being moved within the
+    // same container. Skips the portal case (portal nodes live in an external target and
+    // aren't ours to reposition). No-ops if the node is already in the right position.
+    private moveNodesInto(container: Node, beforeNode: Node | null): void {
+        const node = this.node;
+        if (node) {
+            if (node.parentNode === container && node.nextSibling !== beforeNode) {
+                container.insertBefore(node, beforeNode);
+            }
+            // Portal (node.parentNode !== container): don't move — children live in target.
+        } else {
+            for (let c = this.firstChild; c; c = c.nextSibling) {
+                if (!c.detached) {
+                    c.moveNodesInto(container, beforeNode);
+                }
+            }
+        }
+    }
+
     private propagateHasUpdaters(): void {
         for (let c: Component | undefined = this; c; c = c.parent) {
             if (c.hasUpdaters) break;
@@ -1108,10 +1195,53 @@ export class Component<out N extends Node | null = Node | null> {
         const t1 = performance.now();
         console.log('Ran', updaterCount, 'updaters. Touched', touchedComponents, 'of', componentTreeSize(root), 'components. Time:', (t1 - t0).toFixed(2), 'ms');
     }
+
+    // Reusable buffers for replaceChildren. Safe because replaceChildren is never
+    // re-entrant: update() serializes all update listeners sequentially.
+    private static keptChildren: Component[] = new Array(1024);
+    private static lisTails: number[] = new Array(1024);
+    private static lisPrev: Int32Array = new Int32Array(1024);
+
+    // Computes the LIS of keptChildren (keyed by .reconcileIdx) and marks stable
+    // elements with reconcileIdx = -2. Uses reusable buffers to avoid per-call
+    // allocation; after the first call lisPrev amortizes to zero allocations.
+    private static markStableLIS(keptChildren: Component[]): void {
+        const n = keptChildren.length;
+        if (Component.lisPrev.length < n) {
+            Component.lisPrev = new Int32Array(Math.max(n, Component.lisPrev.length * 2 || 8));
+        }
+        const prev = Component.lisPrev;
+        for (let i = 0; i < n; i++) prev[i] = -1;
+
+        const tails = Component.lisTails;
+        tails.length = 0;
+        for (let i = 0; i < n; i++) {
+            const val = keptChildren[i]!.reconcileIdx;
+            let lo = 0, hi = tails.length;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (keptChildren[tails[mid]!]!.reconcileIdx < val) {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            if (lo > 0) prev[i] = tails[lo - 1]!;
+            tails[lo] = i;
+        }
+
+        // Reconstruct and mark stable directly — no result array needed
+        let idx = tails[tails.length - 1]!;
+        while (idx >= 0) {
+            keptChildren[idx]!.reconcileIdx = -2;
+            idx = prev[idx]!;
+        }
+    }
 }
 
 let updaterCount = 0;
 let touchedComponents = 0;
+
 
 function componentTreeSize(component: Component): number {
     let count = 1;

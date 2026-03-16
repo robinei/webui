@@ -192,6 +192,100 @@ export const controlFlowSuite: TestSuite = {
             },
         },
         {
+            name: 'For: partial update with no moves reuses all nodes',
+            run() {
+                withContainer(container => {
+                    const items = [{ id: 1, t: 'a' }, { id: 2, t: 'b' }, { id: 3, t: 'c' }];
+                    const comp = For(() => items, item => span(() => item().t), item => item.id);
+                    container.appendChild(comp);
+                    const nodesBefore = Array.from(container.node.querySelectorAll('span'));
+                    items[1]!.t = 'B';
+                    container.update();
+                    assertEqual(container.node.textContent, 'aBc');
+                    const nodesAfter = Array.from(container.node.querySelectorAll('span'));
+                    // All nodes reused — no moves, sorted fast path
+                    for (let i = 0; i < 3; i++) assertEqual(nodesAfter[i], nodesBefore[i]);
+                });
+            },
+        },
+        {
+            name: 'For: swap two rows',
+            run() {
+                withContainer(container => {
+                    let items = [{ id: 1, t: 'a' }, { id: 2, t: 'b' }, { id: 3, t: 'c' }, { id: 4, t: 'd' }];
+                    const comp = For(() => items, item => span(item().t), item => item.id);
+                    container.appendChild(comp);
+                    const nodes = Array.from(container.node.querySelectorAll('span'));
+                    // Swap first and last
+                    items = [{ id: 4, t: 'd' }, { id: 2, t: 'b' }, { id: 3, t: 'c' }, { id: 1, t: 'a' }];
+                    container.update();
+                    assertEqual(container.node.textContent, 'dbca');
+                    const newNodes = Array.from(container.node.querySelectorAll('span'));
+                    assertEqual(newNodes[0], nodes[3]); // id:4 reused
+                    assertEqual(newNodes[1], nodes[1]); // id:2 reused
+                    assertEqual(newNodes[2], nodes[2]); // id:3 reused
+                    assertEqual(newNodes[3], nodes[0]); // id:1 reused
+                });
+            },
+        },
+        {
+            name: 'For: full reverse reuses all nodes',
+            run() {
+                withContainer(container => {
+                    let items = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }];
+                    const comp = For(() => items, item => span(`${item().id}`), item => item.id);
+                    container.appendChild(comp);
+                    const nodes = Array.from(container.node.querySelectorAll('span'));
+                    items = [...items].reverse();
+                    container.update();
+                    assertEqual(container.node.textContent, '54321');
+                    const newNodes = Array.from(container.node.querySelectorAll('span'));
+                    for (let i = 0; i < 5; i++) assertEqual(newNodes[i], nodes[4 - i]);
+                });
+            },
+        },
+        {
+            name: 'For: two interleaved sequences [0,8,1,9,2,10,3] — LIS picks longer run',
+            run() {
+                withContainer(container => {
+                    // ids arranged so new order has indices [0,8,1,9,2,10,3] — LIS length 4
+                    const makeItems = (ids: number[]) => ids.map(id => ({ id, t: `${id}` }));
+                    let items = makeItems([0, 1, 2, 3, 8, 9, 10]); // initial sorted order
+                    const comp = For(() => items, item => span(item().t), item => item.id);
+                    container.appendChild(comp);
+                    const nodeById = new Map(Array.from(container.node.querySelectorAll('span')).map(
+                        (n, i) => [items[i]!.id, n]
+                    ));
+                    // Reorder to interleaved: [0,8,1,9,2,10,3]
+                    items = makeItems([0, 8, 1, 9, 2, 10, 3]);
+                    container.update();
+                    assertEqual(container.node.textContent, '0819 2103'.replace(/ /g, ''));
+                    // All original nodes reused
+                    const newNodes = Array.from(container.node.querySelectorAll('span'));
+                    for (const node of newNodes) {
+                        assertEqual(nodeById.get(Number(node.textContent)), node);
+                    }
+                });
+            },
+        },
+        {
+            name: 'For: remove all items then repopulate',
+            run() {
+                withContainer(container => {
+                    let items = [{ id: 1 }, { id: 2 }, { id: 3 }];
+                    const comp = For(() => items, item => span(`${item().id}`), item => item.id);
+                    container.appendChild(comp);
+                    assertEqual(container.node.textContent, '123');
+                    items = [];
+                    container.update();
+                    assertEqual(container.node.textContent, '');
+                    items = [{ id: 4 }, { id: 5 }];
+                    container.update();
+                    assertEqual(container.node.textContent, '45');
+                });
+            },
+        },
+        {
             name: 'Repeat renders N items, adjusts on count change',
             run() {
                 withContainer(container => {
