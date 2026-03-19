@@ -262,6 +262,67 @@ export function createDirtyTracker() {
     };
 }
 
+export function derive<S, T>(source: () => S, transform: (s: S) => T): () => T;
+export function derive<S1, S2, T>(sources: [() => S1, () => S2], transform: (s1: S1, s2: S2) => T): () => T;
+export function derive<S1, S2, S3, T>(sources: [() => S1, () => S2, () => S3], transform: (s1: S1, s2: S2, s3: S3) => T): () => T;
+export function derive<S1, S2, S3, S4, T>(sources: [() => S1, () => S2, () => S3, () => S4], transform: (s1: S1, s2: S2, s3: S3, s4: S4) => T): () => T;
+export function derive(sourceOrSources: (() => unknown) | Array<() => unknown>, transform: (...args: unknown[]) => unknown): () => unknown {
+    if (typeof sourceOrSources === 'function') {
+        let p0: unknown, r: unknown, init = false;
+        return () => {
+            const s = sourceOrSources();
+            if (init && s === p0) return r;
+            init = true; p0 = s;
+            return (r = transform(s));
+        };
+    }
+    const sources = sourceOrSources;
+    const n = sources.length;
+    let r: unknown;
+    let init = false;
+    if (n === 2) {
+        const g0 = sources[0]!, g1 = sources[1]!;
+        let p0: unknown, p1: unknown;
+        return () => {
+            const s0 = g0(), s1 = g1();
+            if (init && s0 === p0 && s1 === p1) return r;
+            init = true; p0 = s0; p1 = s1;
+            return (r = transform(s0, s1));
+        };
+    }
+    if (n === 3) {
+        const g0 = sources[0]!, g1 = sources[1]!, g2 = sources[2]!;
+        let p0: unknown, p1: unknown, p2: unknown;
+        return () => {
+            const s0 = g0(), s1 = g1(), s2 = g2();
+            if (init && s0 === p0 && s1 === p1 && s2 === p2) return r;
+            init = true; p0 = s0; p1 = s1; p2 = s2;
+            return (r = transform(s0, s1, s2));
+        };
+    }
+    if (n === 4) {
+        const g0 = sources[0]!, g1 = sources[1]!, g2 = sources[2]!, g3 = sources[3]!;
+        let p0: unknown, p1: unknown, p2: unknown, p3: unknown;
+        return () => {
+            const s0 = g0(), s1 = g1(), s2 = g2(), s3 = g3();
+            if (init && s0 === p0 && s1 === p1 && s2 === p2 && s3 === p3) return r;
+            init = true; p0 = s0; p1 = s1; p2 = s2; p3 = s3;
+            return (r = transform(s0, s1, s2, s3));
+        };
+    }
+    const prev = new Array(n);
+    return () => {
+        let changed = !init;
+        for (let i = 0; i < n; i++) {
+            const v = sources[i]!();
+            if (v !== prev[i]) { changed = true; prev[i] = v; }
+        }
+        if (!changed) return r;
+        init = true;
+        return (r = transform(...prev));
+    };
+}
+
 export function generateUUID() {
     let d = new Date().getTime();
     let d2 = ((typeof performance !== 'undefined') && performance.now && (performance.now() * 1000)) || 0;

@@ -1,5 +1,5 @@
 import { type WritableKeys, errorDescription, isPlainObject, type ThinVec, tvPush, tvForEach } from './util';
-import { Observable, Effect, Signal, DelegatedSignal, observableProxy, signalProxy, type ObservableProxy, type SignalProxy } from './observable';
+import { Observable, Effect, Signal, DelegatedSignal, observableProxy, signalProxy, type ObservableProxy, type SignalProxy, type EffectOptions } from './observable';
 
 export let onAsyncLoadStart: ((c: Component) => void) | undefined;
 export let onAsyncLoadEnd: ((c: Component) => void) | undefined;
@@ -127,6 +127,11 @@ export function triggerAppUpdate() {
         mountedRootComponent?.updateRoot();
     }
 }
+
+type ObservableEffectOptions<N extends Node | null> = Omit<EffectOptions, 'active' | 'activated' | 'deactivated'> & {
+    activated?(this: Component<N>): void;
+    deactivated?(this: Component<N>): void;
+};
 
 export class Component<out N extends Node | null = Node | null> {
     public node: N;
@@ -305,12 +310,11 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     addMountListener(listener: (this: Component<N>) => void | Promise<void>, invokeNow = false): Component<N> {
-        const boundListener = listener.bind(this);
-        this.mountListeners = tvPush(this.mountListeners, boundListener);
+        this.mountListeners = tvPush(this.mountListeners, listener);
         if (this.mounted && invokeNow) {
             let result: void | Promise<void> = undefined;
             try {
-                result = boundListener();
+                result = listener.call(this);
             } catch (e) {
                 this.injectError(e);
             }
@@ -322,12 +326,11 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     addMountedListener(listener: (this: Component<N>) => void | Promise<void>, invokeNow = false): Component<N> {
-        const boundListener = listener.bind(this);
-        this.mountedListeners = tvPush(this.mountedListeners, boundListener);
+        this.mountedListeners = tvPush(this.mountedListeners, listener);
         if (this.mounted && invokeNow) {
             let result: void | Promise<void> = undefined;
             try {
-                result = boundListener();
+                result = listener.call(this);
             } catch (e) {
                 this.injectError(e);
             }
@@ -339,8 +342,7 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     addUnmountListener(listener: (this: Component<N>) => void): Component<N> {
-        const boundListener = listener.bind(this);
-        this.unmountListeners = tvPush(this.unmountListeners, boundListener);
+        this.unmountListeners = tvPush(this.unmountListeners, listener);
         return this;
     }
 
@@ -356,14 +358,27 @@ export class Component<out N extends Node | null = Node | null> {
         return this;
     }
 
+    addObservableEffect(effect: Effect): Component<N>;
+    addObservableEffect(fn: (this: Component<N>) => void, options?: ObservableEffectOptions<N>): Component<N>;
+    addObservableEffect(effectOrFn: Effect | ((this: Component<N>) => void), options?: ObservableEffectOptions<N>): Component<N> {
+        const effect = effectOrFn instanceof Effect ? effectOrFn : new Effect(effectOrFn.bind(this), {
+            ...options,
+            active: false,
+            activated: options?.activated?.bind(this),
+            deactivated: options?.deactivated?.bind(this)
+        });
+        this.addMountListener(() => effect.activate());
+        this.addUnmountListener(() => effect.deactivate());
+        return this;
+    }
+
     addUpdateListener(listener: (this: Component<N>) => void | false, invokeNow = false): Component<N> {
-        const boundListener = listener.bind(this);
         const wasEmpty = !this.updateListeners;
-        this.updateListeners = tvPush(this.updateListeners, boundListener);
+        this.updateListeners = tvPush(this.updateListeners, listener);
         if (wasEmpty) this.propagateHasUpdaters();
         if (this.mounted && invokeNow) {
             try {
-                boundListener();
+                listener.call(this);
             } catch (e) {
                 this.injectError(e);
             }
@@ -384,25 +399,21 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck: boolean = true): Component<N> {
-        const boundWatcher = watcher.bind(this);
-
         if (value instanceof Observable) {
             let lastEmittedValue: T | Nil = Nil;
-            const effect = new Effect(() => {
+            this.addObservableEffect(() => {
                 const newValue = value.get();
                 if (!equalCheck || lastEmittedValue !== newValue) {
                     lastEmittedValue = newValue;
-                    try { boundWatcher(newValue); } catch (e) { this.injectError(e); }
+                    try { watcher.call(this, newValue); } catch (e) { this.injectError(e); }
                 }
-            }, { active: false });
-            this.addMountListener(() => effect.activate());
-            this.addUnmountListener(() => { lastEmittedValue = Nil; effect.deactivate(); });
+            }, { deactivated() { lastEmittedValue = Nil; } });
             return this;
         }
 
         if (isStaticValue(value)) {
             try {
-                boundWatcher(value);
+                watcher.call(this, value);
             } catch (e) {
                 this.injectError(e);
             }
@@ -410,11 +421,11 @@ export class Component<out N extends Node | null = Node | null> {
         }
 
         let lastEmittedValue: T | Nil = Nil;
-        this.addUpdateListener(function onValueWatcherUpdate() {
+        this.addUpdateListener(function onValueWatcherUpdate(this: Component<N>) {
             const newValue = value();
             if (!equalCheck || lastEmittedValue !== newValue) {
                 lastEmittedValue = newValue;
-                boundWatcher(newValue);
+                watcher.call(this, newValue);
             }
         }, true);
         this.addUnmountListener(() => { lastEmittedValue = Nil; });
@@ -438,11 +449,10 @@ export class Component<out N extends Node | null = Node | null> {
 
     addValueLoader<T>(value: Value<T>, loader: (this: Component<N>, v: T) => Promise<() => void>): Component<N> {
         let counter = 0;
-        const boundLoader = loader.bind(this);
-        return this.addValueWatcher(value, function onLoadKeyChanged(key) {
+        return this.addValueWatcher(value, function onLoadKeyChanged(this: Component<N>, key) {
             const capturedCounter = ++counter;
             this.trackAsyncLoad(async function runValueLoader() {
-                const apply = await boundLoader(key);
+                const apply = await loader.call(this, key);
                 if (capturedCounter == counter) {
                     apply();
                     return;
@@ -865,7 +875,7 @@ export class Component<out N extends Node | null = Node | null> {
             tvForEach(component.mountedListeners, listener => {
                 let result: void | Promise<void> = undefined;
                 try {
-                    result = listener();
+                    result = listener.call(component);
                 } catch (e) {
                     component.injectError(e);
                 }
@@ -893,7 +903,7 @@ export class Component<out N extends Node | null = Node | null> {
                 tvForEach(component.mountListeners, listener => {
                     let result: void | Promise<void> = undefined;
                     try {
-                        result = listener();
+                        result = listener.call(component);
                     } catch (e) {
                         component.injectError(e);
                     }
@@ -940,7 +950,7 @@ export class Component<out N extends Node | null = Node | null> {
             if (component.unmountListeners) {
                 tvForEach(component.unmountListeners, listener => {
                     try {
-                        listener();
+                        listener.call(component);
                     } catch (e) {
                         component.injectError(e);
                     }
@@ -1003,7 +1013,7 @@ export class Component<out N extends Node | null = Node | null> {
                 tvForEach(component.updateListeners, listener => {
                     updaterCount += 1;
                     try {
-                        if (listener() === false) {
+                        if (listener.call(component) === false) {
                             skipSubtree = true;
                             return false;
                         }
