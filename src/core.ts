@@ -371,6 +371,18 @@ export class Component<out N extends Node | null = Node | null> {
         return this;
     }
 
+    guardUpdate<S>(source: () => S): Component<N> {
+        let prev: S;
+        let init = false;
+        return this.addUpdateListener(() => {
+            const s = source();
+            if (init && s === prev) return false;
+            init = true;
+            prev = s;
+            return;
+        });
+    }
+
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck: boolean = true): Component<N> {
         const boundWatcher = watcher.bind(this);
 
@@ -1385,7 +1397,7 @@ export function With<T>(value: Value<T>, mapper: (v: T) => FragmentItem, name?: 
     });
 }
 
-export function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> {
+export function If(condValue: Value<unknown>, thenFragment: FragmentItem, elseFragment?: FragmentItem): Component<null> {
     let thenComponents: Component[] | undefined;
     let elseComponents: Component[] | undefined;
     return new Component(null, 'If').addValueWatcher(condValue, function evalIf(v) {
@@ -1397,7 +1409,7 @@ export function If(condValue: Value<boolean>, thenFragment: FragmentItem, elseFr
     });
 }
 
-export function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> {
+export function When(condValue: Value<unknown>, ...bodyFragment: FragmentItem[]): Component<null> {
     let bodyComponents: Component[] | undefined;
     return new Component(null, 'When').addValueWatcher(condValue, function evalWhen(v) {
         if (v) {
@@ -1408,7 +1420,7 @@ export function When(condValue: Value<boolean>, ...bodyFragment: FragmentItem[])
     });
 }
 
-export function Unless(condValue: Value<boolean>, ...bodyFragment: FragmentItem[]): Component<null> {
+export function Unless(condValue: Value<unknown>, ...bodyFragment: FragmentItem[]): Component<null> {
     let bodyComponents: Component[] | undefined;
     return new Component(null, 'Unless').addValueWatcher(condValue, function evalUnless(v) {
         if (v) {

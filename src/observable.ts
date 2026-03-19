@@ -78,6 +78,10 @@ export abstract class Observable<T> {
 
     requiresPolling(): boolean { return false; }
 
+    map<U>(f: (v: T) => U): Computed<U> {
+        return new Computed(() => f(this.get()));
+    }
+
     protected constructor(protected readonly observableOptions: ObservableOptions | undefined) { }
 
     protected invalidate(): void {
@@ -380,6 +384,7 @@ export function observableProxy<T extends object>(object: Observable<T>): Observ
         get: object.get.bind(object),
         requiresPolling: object.requiresPolling.bind(object),
         hasChanged: object.hasChanged.bind(object),
+        map: object.map.bind(object),
     };
     return new Proxy(object, {
         get(_, key) {
@@ -388,7 +393,8 @@ export function observableProxy<T extends object>(object: Observable<T>): Observ
                 return undefined;
             }
             return cache[key] ??= observableProxy(new Computed(function getProxyChild() {
-                return (object.get() as any)[key];
+                const v = object.get() as any;
+                return v != null ? v[key] : undefined;
             }));
         }
     }) as ObservableProxy<T>;
@@ -405,6 +411,7 @@ export function signalProxy<T extends object>(object: Signal<T>): SignalProxy<T>
         get: object.get.bind(object),
         requiresPolling: object.requiresPolling.bind(object),
         hasChanged: object.hasChanged.bind(object),
+        map: object.map.bind(object),
         set: object.set.bind(object),
         modify: object.modify.bind(object),
     };
@@ -417,7 +424,8 @@ export function signalProxy<T extends object>(object: Signal<T>): SignalProxy<T>
             }
             return cache[key] ??= signalProxy(new DelegatedSignal(
                 new Computed(function getProxyChild() {
-                    return (object.get() as any)[key];
+                    const v = object.get() as any;
+                    return v != null ? v[key] : undefined;
                 }),
                 function modifyProxyChild(f) {
                     return object.modify(function modifyProxy(obj: any) {

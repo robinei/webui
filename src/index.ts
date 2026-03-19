@@ -33,6 +33,19 @@ export const newsPostRoute = newsRoute.subRoute('/id:number',
     { importPath: './pages/news' }
 );
 
+export const newsObsRoute = router.subRoute('/news-obs',
+    async () => (await import('./pages/news-obs')).NewsObsPage(),
+    { importPath: './pages/news-obs' }
+);
+export const newsObsListRoute = newsObsRoute.subRoute('/',
+    async () => (await import('./pages/news-obs')).NewsObsListPage(),
+    { importPath: './pages/news-obs' }
+);
+export const newsObsPostRoute = newsObsRoute.subRoute('/id:number',
+    async ({ id }) => (await import('./pages/news-obs')).NewsObsPostPage({ id }),
+    { importPath: './pages/news-obs' }
+);
+
 export const testsRoute = router.subRoute('/tests',
     async () => (await import('./pages/tests')).TestsPage(),
     { transient: true, importPath: './pages/tests' }
@@ -58,6 +71,7 @@ function RootPage(): FragmentItem {
             benchRoute.Link({}, 'Benchmark'),
             virtualRoute.Link({}, 'Virtual List'),
             newsRoute.Link({}, 'News'),
+            newsObsRoute.Link({}, 'News (Obs)'),
             testsRoute.Link({}, 'Tests'),
             button('Print tree', {
                 onclick() {

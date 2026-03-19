@@ -1,5 +1,5 @@
 import { Component, onQueryBind, type Value } from './core';
-import { Signal, Computed, Observable } from './observable';
+import { Signal, Computed, Observable, observableProxy, type ObservableProxy } from './observable';
 
 export interface QueryOptions<K = void> {
     staleTime?: number;          // ms before data is stale (default 0 = always SWR)
@@ -13,7 +13,7 @@ export interface QueryOptions<K = void> {
 }
 
 export type QueryHandle<T> = Component<null> & {
-    readonly data: Observable<T | undefined>;
+    readonly data: ObservableProxy<NonNullable<T>>;
     readonly error: Observable<unknown>;
     readonly loading: Observable<boolean>;
 };
@@ -175,7 +175,7 @@ function attachHandle<T>(
     error: Observable<unknown>,
     loading: Observable<boolean>,
 ): QueryHandle<T> {
-    Object.defineProperty(component, 'data', { value: data, enumerable: true });
+    Object.defineProperty(component, 'data', { value: observableProxy(data as unknown as Observable<NonNullable<T> & object>), enumerable: true });
     Object.defineProperty(component, 'error', { value: error, enumerable: true });
     Object.defineProperty(component, 'loading', { value: loading, enumerable: true });
     return component as QueryHandle<T>;
