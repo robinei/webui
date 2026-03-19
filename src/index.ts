@@ -1,4 +1,4 @@
-import { Component, type FragmentItem, HTML, Suspense, readEmbeddedStoreData } from './core';
+import { Component, type FragmentItem, HTML, Suspense } from './core';
 import { hydrateQueryCache } from './query';
 import { Router, Outlet } from './routing';
 
@@ -54,8 +54,7 @@ export const testsRoute = router.subRoute('/tests',
 export const notFoundRoute = router.subRoute('/*', NotFoundPage);
 
 if (typeof document !== 'undefined') {
-    readEmbeddedStoreData();
-    const cacheEl = document.getElementById('__QUERY_CACHE__');
+const cacheEl = document.getElementById('__QUERY_CACHE__');
     if (cacheEl) { hydrateQueryCache(JSON.parse(cacheEl.textContent!)); cacheEl.remove(); }
     router.mount(document.body);
 }

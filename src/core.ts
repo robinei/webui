@@ -18,11 +18,23 @@ export function setServerHooks(hooks: {
 const Nil: unique symbol = Symbol('Nil');
 type Nil = typeof Nil;
 
-
-export type Value<T> = T | (() => T) | Observable<T>;
+export type Pollable<T> = T | (() => T);
+export type Value<T> = Pollable<T> | Observable<T>;
 
 export function isStaticValue<T>(value: Value<T>): value is T {
     return typeof value !== 'function' && !(value instanceof Observable);
+}
+
+export function toGetter<T>(value: Value<T>): () => T {
+    if (isStaticValue(value)) return () => value;
+    if (value instanceof Observable) return () => value.get();
+    return value;
+}
+
+export function getValue<T>(value: Value<T>): T {
+    if (isStaticValue(value)) return value;
+    if (value instanceof Observable) return value.get();
+    return value();
 }
 
 export function fields<T extends object>(source: () => T): { readonly [K in keyof T]: () => T[K] } {
@@ -33,8 +45,8 @@ export function fields<T extends object>(source: () => T): { readonly [K in keyo
     });
 }
 
-export function memoFilter<T>(source: Value<ReadonlyArray<T>>, predicate: (item: T) => boolean): () => T[] {
-    const getItems: () => ReadonlyArray<T> = isStaticValue(source) ? () => source : source instanceof Observable ? () => source.get() : source;
+export function memoFilter<T>(source: Pollable<ReadonlyArray<T>>, predicate: (item: T) => boolean): () => T[] {
+    const getItems = toGetter(source);
     let cached: T[] = [];
     return () => {
         const items = getItems();
@@ -119,15 +131,6 @@ let updateDepth = 0;
 let pendingUpdateRoot: Component | null = null;
 
 
-let mountedRootComponent: Component | null = null;
-let suppressingUpdates = false;
-
-export function triggerAppUpdate() {
-    if (!suppressingUpdates) {
-        mountedRootComponent?.updateRoot();
-    }
-}
-
 type ObservableEffectOptions<N extends Node | null> = Omit<EffectOptions, 'active' | 'activated' | 'deactivated'> & {
     activated?(this: Component<N>): void;
     deactivated?(this: Component<N>): void;
@@ -148,7 +151,7 @@ export class Component<out N extends Node | null = Node | null> {
     private mountListeners: ThinVec<() => void | Promise<void>>;
     private mountedListeners: ThinVec<() => void | Promise<void>>;
     private unmountListeners: ThinVec<() => void>;
-    private updateListeners: ThinVec<() => void | false>;
+    private updateListeners: (() => void | false)[] | undefined;
     private hasUpdaters: boolean;
 
     private unhandledError: unknown | undefined;
@@ -202,7 +205,7 @@ export class Component<out N extends Node | null = Node | null> {
 
     hasChildren(): boolean { return !!this.firstChild; }
 
-    isDetached(): boolean { return this.detached ?? false; }
+    isDetached(): boolean { return this.detached; }
 
     getRoot(): Component {
         let c: Component = this;
@@ -225,7 +228,7 @@ export class Component<out N extends Node | null = Node | null> {
         let c: Component = this;
         for (; ;) {
             try {
-                if (c.errorHandler?.(error) === true) {
+                if (c.errorHandler?.call(c, error) === true) {
                     return;
                 }
             } catch (e) {
@@ -242,7 +245,7 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     setErrorHandler(handler: (this: Component<N>, error: unknown) => boolean): Component<N> {
-        this.errorHandler = handler.bind(this);
+        this.errorHandler = handler;
         const unhandled = this.unhandledError;
         if (unhandled) {
             this.unhandledError = undefined;
@@ -256,8 +259,8 @@ export class Component<out N extends Node | null = Node | null> {
             // we don't contribute to parent count when we have a handler
             this.parent.addSuspenseCount(-this.suspenseCount);
         }
-        this.suspenseHandler = handler.bind(this);
-        this.suspenseHandler(this.suspenseCount ?? 0); // always invoke (even with 0), so the handler can ensure things start out according to the current count
+        this.suspenseHandler = handler;
+        this.suspenseHandler.call(this, this.suspenseCount); // always invoke (even with 0), so the handler can ensure things start out according to the current count
         return this;
     }
 
@@ -286,22 +289,18 @@ export class Component<out N extends Node | null = Node | null> {
         if (!self.node) {
             throw new Error('addEventListener called on node-less component');
         }
-        const boundListener = listener.bind(self);
-        self.node.addEventListener(type, function listenerInvoker(ev): void {
-            suppressingUpdates = true;
+        self.node.addEventListener(type, function eventListenerInvoker(ev): void {
             let result: void | false | Promise<void>;
             try {
-                result = boundListener(ev as GlobalEventHandlersEventMap[K]);
+                result = listener.call(self, ev as GlobalEventHandlersEventMap[K]);
             } catch (e) {
                 self.injectError(e);
-                suppressingUpdates = false;
                 return;
             }
-            suppressingUpdates = false;
             if (result === false) {
                 // do nothing
             } else if (result instanceof Promise) {
-                self.trackAsyncLoad(() => result as Promise<void>);
+                self.trackAsyncLoad(result);
             } else {
                 self.updateRoot();
             }
@@ -319,7 +318,7 @@ export class Component<out N extends Node | null = Node | null> {
                 this.injectError(e);
             }
             if (result instanceof Promise) {
-                this.trackAsyncLoad(() => result as Promise<void>);
+                this.trackAsyncLoad(result);
             }
         }
         return this;
@@ -335,7 +334,7 @@ export class Component<out N extends Node | null = Node | null> {
                 this.injectError(e);
             }
             if (result instanceof Promise) {
-                this.trackAsyncLoad(() => result as Promise<void>);
+                this.trackAsyncLoad(result);
             }
         }
         return this;
@@ -346,13 +345,13 @@ export class Component<out N extends Node | null = Node | null> {
         return this;
     }
 
-    addEffect(fn: (this: Component<N>) => (() => void) | void): Component<N> {
-        let cleanup: (() => void) | null = null;
+    addEffect(fn: (this: Component<N>) => ((this: Component<N>) => void) | void): Component<N> {
+        let cleanup: ((this: Component<N>) => void) | null = null;
         this.addMountedListener(function onEffectMount(this: Component<N>) {
             cleanup = fn.call(this) ?? null;
         });
         this.addUnmountListener(function onEffectUnmount() {
-            cleanup?.();
+            cleanup?.call(this);
             cleanup = null;
         });
         return this;
@@ -374,7 +373,7 @@ export class Component<out N extends Node | null = Node | null> {
 
     addUpdateListener(listener: (this: Component<N>) => void | false, invokeNow = false): Component<N> {
         const wasEmpty = !this.updateListeners;
-        this.updateListeners = tvPush(this.updateListeners, listener);
+        (this.updateListeners ??= []).push(listener);
         if (wasEmpty) this.propagateHasUpdaters();
         if (this.mounted && invokeNow) {
             try {
@@ -399,6 +398,15 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     addValueWatcher<T>(value: Value<T>, watcher: (this: Component<N>, v: T) => void, equalCheck: boolean = true): Component<N> {
+        if (isStaticValue(value)) {
+            try {
+                watcher.call(this, value);
+            } catch (e) {
+                this.injectError(e);
+            }
+            return this;
+        }
+
         if (value instanceof Observable) {
             let lastEmittedValue: T | Nil = Nil;
             this.addObservableEffect(() => {
@@ -411,15 +419,7 @@ export class Component<out N extends Node | null = Node | null> {
             return this;
         }
 
-        if (isStaticValue(value)) {
-            try {
-                watcher.call(this, value);
-            } catch (e) {
-                this.injectError(e);
-            }
-            return this;
-        }
-
+        // value is 'function'
         let lastEmittedValue: T | Nil = Nil;
         this.addUpdateListener(function onValueWatcherUpdate(this: Component<N>) {
             const newValue = value();
@@ -432,11 +432,12 @@ export class Component<out N extends Node | null = Node | null> {
         return this;
     }
 
-    async trackAsyncLoad(load: (this: Component<N>) => Promise<void | false>): Promise<void> {
+    async trackAsyncLoad(load: Promise<void | false> | ((this: Component<N>) => Promise<void | false>)): Promise<void> {
         onAsyncLoadStart?.(this);
         this.addSuspenseCount(1);
         try {
-            if (await load.bind(this)() !== false) {
+            const result = await (load instanceof Promise ? load : load.call(this));
+            if (result !== false) {
                 this.updateRoot();
             }
         } catch (e) {
@@ -449,7 +450,12 @@ export class Component<out N extends Node | null = Node | null> {
 
     addValueLoader<T>(value: Value<T>, loader: (this: Component<N>, v: T) => Promise<() => void>): Component<N> {
         let counter = 0;
+        let lastKey: T | Nil = Nil;
+        // equalCheck: false — we do our own dedup via lastKey, which intentionally survives
+        // unmount/remount so the same key on re-mount does not re-trigger the load.
         return this.addValueWatcher(value, function onLoadKeyChanged(this: Component<N>, key) {
+            if (key === lastKey) return;
+            lastKey = key;
             const capturedCounter = ++counter;
             this.trackAsyncLoad(async function runValueLoader() {
                 const apply = await loader.call(this, key);
@@ -459,7 +465,7 @@ export class Component<out N extends Node | null = Node | null> {
                 }
                 return false;
             });
-        });
+        }, false);
     }
 
     setAttributes<A extends N>(attributes: Attributes<A>): Component<N> {
@@ -797,12 +803,11 @@ export class Component<out N extends Node | null = Node | null> {
     }
 
     appendFragment(fragment: FragmentItem): Component<N> {
-        iterateFragment(fragment, this.insertBefore.bind(this));
+        iterateFragment(fragment, this, this.insertBefore);
         return this;
     }
 
     setLazyContent(fragmentFunc: (this: Component<N>) => FragmentItem | Promise<FragmentItem>, transient?: boolean): Component<N> {
-        const boundFragmentFunc = fragmentFunc.bind(this);
         let counter = 0;
         let loaded = false;
         this.addMountListener(function onMountLazyContent() {
@@ -810,7 +815,7 @@ export class Component<out N extends Node | null = Node | null> {
                 return;
             }
             loaded = true;
-            const bodyResult = boundFragmentFunc();
+            const bodyResult = fragmentFunc.call(this);
             if (!(bodyResult instanceof Promise)) {
                 this.replaceFragment(bodyResult);
                 return;
@@ -865,7 +870,6 @@ export class Component<out N extends Node | null = Node | null> {
         const pendingMountedCalls = this.doMount();
         this.update();
         this.signalMounted(pendingMountedCalls);
-        mountedRootComponent = this;
         return this;
     }
 
@@ -880,7 +884,7 @@ export class Component<out N extends Node | null = Node | null> {
                     component.injectError(e);
                 }
                 if (result instanceof Promise) {
-                    component.trackAsyncLoad(() => result as Promise<void>);
+                    component.trackAsyncLoad(result);
                 }
             });
         }
@@ -908,7 +912,7 @@ export class Component<out N extends Node | null = Node | null> {
                         component.injectError(e);
                     }
                     if (result instanceof Promise) {
-                        component.trackAsyncLoad(() => result as Promise<void>);
+                        component.trackAsyncLoad(result);
                     }
                     if (!component.mounted) {
                         return false; // in case a mount handler caused the tree to be (synchronously) unmounted
@@ -996,8 +1000,11 @@ export class Component<out N extends Node | null = Node | null> {
         return this;
     }
 
+    private static updateStack: Component[] = [];
     private doUpdateWalk(): void {
-        const stack: Component[] = [this];
+        const stack = Component.updateStack;
+        stack.length = 0;
+        stack.push(this);
         for (; ;) {
             const component = stack.pop();
             if (!component) {
@@ -1010,20 +1017,19 @@ export class Component<out N extends Node | null = Node | null> {
 
             if (component.updateListeners) {
                 let skipSubtree = false;
-                tvForEach(component.updateListeners, listener => {
+                for (const listener of component.updateListeners) {
                     updaterCount += 1;
                     try {
                         if (listener.call(component) === false) {
                             skipSubtree = true;
-                            return false;
+                            break;
                         }
                     } catch (e) {
                         component.injectError(e);
                         skipSubtree = true;
-                        return false;
+                        break;
                     }
-                    return;
-                });
+                }
                 if (skipSubtree) {
                     continue;
                 }
@@ -1088,10 +1094,9 @@ export class Component<out N extends Node | null = Node | null> {
                 // Normal case: node not yet in the DOM, insert it.
                 container.insertBefore(node, beforeNode);
             } else if (node.parentNode === container) {
-                // Already in the right container — sanity-check position only.
-                if (node.nextSibling !== beforeNode) {
-                    throw new Error('unexpected nextSibling');
-                }
+                // Already in the right container — inserted by a mount listener (e.g. Lazy's
+                // setLazyContent) that ran during doMount after the child was linked into the
+                // component tree. Position was set correctly at that time; nothing to do.
             } else {
                 // Portal: this component's node is already attached to an external
                 // container (the portal target). Don't move node itself; instead
@@ -1193,10 +1198,10 @@ export class Component<out N extends Node | null = Node | null> {
 
     private addSuspenseCount(diff: number): void {
         for (let c: Component | undefined = this; c; c = c.parent) {
-            c.suspenseCount = (c.suspenseCount ?? 0) + diff;
+            c.suspenseCount += diff;
             if (c.suspenseHandler) {
                 try {
-                    c.suspenseHandler(c.suspenseCount);
+                    c.suspenseHandler.call(c, c.suspenseCount);
                 } catch (e) {
                     c.injectError(e);
                 }
@@ -1212,9 +1217,12 @@ export class Component<out N extends Node | null = Node | null> {
         const t0 = performance.now();
         updaterCount = 0;
         touchedComponents = 0;
+
         const root = this.getRoot();
         root.update();
+
         const t1 = performance.now();
+        // we don't care that this componentTreeSize traverses the whole tree, as this is debug code we can delete at any time
         console.log('Ran', updaterCount, 'updaters. Touched', touchedComponents, 'of', componentTreeSize(root), 'components. Time:', (t1 - t0).toFixed(2), 'ms');
     }
 
@@ -1293,7 +1301,7 @@ function setElementAttribute(elem: Element, name: string, value: Primitive): voi
 }
 
 
-function visitFragment(fragment: FragmentItem, text: string, handler: (component: Component) => void): string {
+function visitFragment(fragment: FragmentItem, text: string, thisRef: unknown, handler: (this: unknown, component: Component) => void): string {
     if (fragment === null) {
         return text;
     }
@@ -1307,24 +1315,24 @@ function visitFragment(fragment: FragmentItem, text: string, handler: (component
             return text;
         case 'function':
             if (text) {
-                handler(StaticText(text));
+                handler.call(thisRef, StaticText(text));
             }
-            handler(DynamicText(fragment));
+            handler.call(thisRef, DynamicText(fragment));
             return '';
         default:
             if (fragment instanceof Observable) {
-                if (text) handler(StaticText(text));
-                handler(DynamicText(fragment));
+                if (text) handler.call(thisRef, StaticText(text));
+                handler.call(thisRef, DynamicText(fragment));
                 return '';
             } else if (fragment instanceof Component) {
                 if (text) {
-                    handler(StaticText(text));
+                    handler.call(thisRef, StaticText(text));
                 }
-                handler(fragment);
+                handler.call(thisRef, fragment);
                 return '';
             } else if (Array.isArray(fragment)) {
                 for (const item of fragment) {
-                    text = visitFragment(item, text, handler);
+                    text = visitFragment(item, text, thisRef, handler);
                 }
                 return text;
             } else {
@@ -1333,16 +1341,16 @@ function visitFragment(fragment: FragmentItem, text: string, handler: (component
     }
 }
 
-export function iterateFragment(rootFragment: FragmentItem, handler: (component: Component) => void): void {
-    const text = visitFragment(rootFragment, '', handler);
+export function iterateFragment(rootFragment: FragmentItem, thisRef: unknown, handler: (this: unknown, component: Component) => void): void {
+    const text = visitFragment(rootFragment, '', thisRef, handler);
     if (text) {
-        handler(StaticText(text));
+        handler.call(thisRef, StaticText(text));
     }
 }
 
 export function flattenFragment(fragment: FragmentItem): Component[] {
     const components: Component[] = [];
-    iterateFragment(fragment, components.push.bind(components));
+    iterateFragment(fragment, components, components.push);
     return components;
 }
 
@@ -1358,13 +1366,12 @@ export const HTML = new Proxy({}, {
             if (arguments.length > 0) {
                 let text = '';
 
-                const insertBefore = component.insertBefore.bind(component);
                 for (let i = 0; i < arguments.length; ++i) {
                     const arg = arguments[i];
                     if (isPlainObject(arg)) {
                         component.setAttributes(arg);
                     } else {
-                        text = visitFragment(arg, text, insertBefore);
+                        text = visitFragment(arg, text, component, component.insertBefore);
                     }
                 }
 
@@ -1421,22 +1428,36 @@ export function If(condValue: Value<unknown>, thenFragment: FragmentItem, elseFr
 
 export function When(condValue: Value<unknown>, ...bodyFragment: FragmentItem[]): Component<null> {
     let bodyComponents: Component[] | undefined;
+    let active = false;
     return new Component(null, 'When').addValueWatcher(condValue, function evalWhen(v) {
         if (v) {
-            this.appendChildren(bodyComponents ??= flattenFragment(bodyFragment));
+            if (!active) {
+                this.appendChildren(bodyComponents ??= flattenFragment(bodyFragment));
+                active = true;
+            }
         } else {
-            this.clear();
+            if (active) {
+                this.clear();
+                active = false;
+            }
         }
     });
 }
 
 export function Unless(condValue: Value<unknown>, ...bodyFragment: FragmentItem[]): Component<null> {
     let bodyComponents: Component[] | undefined;
+    let active = false;
     return new Component(null, 'Unless').addValueWatcher(condValue, function evalUnless(v) {
         if (v) {
-            this.clear();
+            if (active) {
+                this.clear();
+                active = false;
+            }
         } else {
-            this.appendChildren(bodyComponents ??= flattenFragment(bodyFragment));
+            if (!active) {
+                this.appendChildren(bodyComponents ??= flattenFragment(bodyFragment));
+                active = true;
+            }
         }
     });
 }
@@ -1478,6 +1499,10 @@ export function For<T extends object>(itemsValue: Value<ReadonlyArray<T>>, rende
 }
 
 
+// Reusable buffer for For reconciliation — safe because doUpdateWalk is non-reentrant
+// (updateDepth guards against re-entry) so at most one For listener executes at a time.
+const forChildrenBuffer: Component[] = [];
+
 function forDirect<T extends object>(items: ReadonlyArray<T>, renderFunc: (item: T) => FragmentItem): Component<null> {
     let fragmentMap = new Map<unknown, Component[]>();
 
@@ -1496,26 +1521,26 @@ function forDirect<T extends object>(items: ReadonlyArray<T>, renderFunc: (item:
         if (match && c === undefined) return;
         // Structural change: full reconciliation
         const newFragmentMap = new Map<unknown, Component[]>();
-        const children: Component[] = [];
+        forChildrenBuffer.length = 0;
         for (const item of arr) {
             const fragment = fragmentMap.get(item) ?? flattenFragment(renderFunc(item));
             newFragmentMap.set(item, fragment);
-            for (const c of fragment) children.push(c);
+            for (const c of fragment) forChildrenBuffer.push(c);
         }
         fragmentMap = newFragmentMap;
-        this.replaceChildren(children);
+        this.replaceChildren(forChildrenBuffer);
     }, false);
 }
 
 function forDirectKeyed<T extends object>(items: ReadonlyArray<T>, renderFunc: (item: T) => FragmentItem, keyOf: (item: T) => unknown): Component<null> {
     let itemByKey = new Map<unknown, T>();
     let fragmentMap = new Map<unknown, Component[]>();
-    let lastKeys: unknown[] = [];
-    let lastItems: T[] | undefined;
+    const lastKeys: unknown[] = [];
+    const lastItems: T[] = [];
 
     return new Component<null>(null, 'For').addValueWatcher(() => items, function onForItemsChanged(arr) {
         // Fast path: same item references in same key order — zero writes.
-        if (lastItems && arr.length === lastItems.length) {
+        if (arr.length === lastItems.length) {
             let same = true;
             for (let i = 0; i < arr.length; ++i) {
                 if (arr[i] !== lastItems[i] || keyOf(arr[i]!) !== lastKeys[i]) { same = false; break; }
@@ -1525,37 +1550,37 @@ function forDirectKeyed<T extends object>(items: ReadonlyArray<T>, renderFunc: (
         // Structural change: full reconciliation
         const newItemByKey = new Map<unknown, T>();
         const newFragmentMap = new Map<unknown, Component[]>();
-        const newKeys: unknown[] = [];
-        const children: Component[] = [];
+        lastKeys.length = 0;
+        lastItems.length = 0;
+        forChildrenBuffer.length = 0;
         for (const item of arr) {
             const key = keyOf(item);
             newItemByKey.set(key, item);
-            newKeys.push(key);
+            lastKeys.push(key);
+            lastItems.push(item);
             // Reuse fragment only when same item reference (mutable, not swapped out).
             const fragment = itemByKey.get(key) === item
                 ? fragmentMap.get(key)!
                 : flattenFragment(renderFunc(item));
             newFragmentMap.set(key, fragment);
-            for (const c of fragment) children.push(c);
+            for (const c of fragment) forChildrenBuffer.push(c);
         }
-        lastItems = arr.slice();
-        lastKeys = newKeys;
         itemByKey = newItemByKey;
         fragmentMap = newFragmentMap;
-        this.replaceChildren(children);
+        this.replaceChildren(forChildrenBuffer);
     }, false);
 }
 
 function forThunk<T extends object>(itemsValue: () => ReadonlyArray<T>, renderFunc: (getItem: () => T) => FragmentItem, keyOf: (item: T) => unknown): Component<null> {
     const itemsByKey = new Map<unknown, T>();
     let fragmentMap = new Map<unknown, Component[]>();
-    let lastKeys: unknown[] = [];
-    let lastItems: T[] | undefined;
+    const lastKeys: unknown[] = [];
+    const lastItems: T[] = [];
 
     return new Component<null>(null, 'For').addValueWatcher(itemsValue, function onForItemsChanged(items) {
         // Fast path: zero writes. When items[i] === lastItems[i], itemsByKey is already
         // correct (same object). When a reference changes, we fall through and update.
-        if (lastItems && items.length === lastItems.length) {
+        if (items.length === lastItems.length) {
             let same = true;
             for (let i = 0; i < items.length; ++i) {
                 if (items[i] !== lastItems[i] || keyOf(items[i]!) !== lastKeys[i]) { same = false; break; }
@@ -1565,24 +1590,24 @@ function forThunk<T extends object>(itemsValue: () => ReadonlyArray<T>, renderFu
         // Structural change: full reconciliation
         itemsByKey.clear();
         const newFragmentMap = new Map<unknown, Component[]>();
-        const newKeys: unknown[] = [];
-        const children: Component[] = [];
+        lastKeys.length = 0;
+        lastItems.length = 0;
+        forChildrenBuffer.length = 0;
         for (const item of items) {
             const key = keyOf(item);
             itemsByKey.set(key, item);
-            newKeys.push(key);
+            lastKeys.push(key);
+            lastItems.push(item);
             const fragment = fragmentMap.get(key) ?? flattenFragment(renderFunc(() => {
                 const item = itemsByKey.get(key);
                 if (item === undefined) throw new Error('missing item in For itemsByKey');
                 return item;
             }));
             newFragmentMap.set(key, fragment);
-            for (const c of fragment) children.push(c);
+            for (const c of fragment) forChildrenBuffer.push(c);
         }
-        lastItems = items.slice();
-        lastKeys = newKeys;
         fragmentMap = newFragmentMap;
-        this.replaceChildren(children);
+        this.replaceChildren(forChildrenBuffer);
     }, false);
 }
 
@@ -1609,7 +1634,9 @@ function forSignal<T extends object>(itemsValue: Signal<ReadonlyArray<T>>, rende
             }
             return;
         }
-        // Structural change: full reconciliation
+        // Structural change: full reconciliation.
+        // Cannot use forChildrenBuffer here: this listener fires via effect.activate() during
+        // mount, so a nested For's activation inside insertBefore → doMount would clobber it.
         const newFragmentMap = new Map<unknown, Component[]>();
         const children: Component[] = [];
         for (const item of items) {
@@ -1664,7 +1691,9 @@ function forObservable<T extends object>(itemsValue: Observable<ReadonlyArray<T>
             }
             return;
         }
-        // Structural change: full reconciliation
+        // Structural change: full reconciliation.
+        // Cannot use forChildrenBuffer here: this listener fires via effect.activate() during
+        // mount, so a nested For's activation inside insertBefore → doMount would clobber it.
         const newFragmentMap = new Map<unknown, Component[]>();
         const children: Component[] = [];
         for (const item of items) {
@@ -1712,15 +1741,13 @@ export function ErrorBoundary(
     body: (this: Component<null>) => FragmentItem
 ): Component<null> {
     const component = new Component(null, 'ErrorBoundary').setErrorHandler(onError);
-    const boundFallback = fallback.bind(component);
-    const boundBody = body.bind(component);
     initContent();
     return component;
 
     function onError(error: unknown): boolean {
         console.error(`Error caught by ErrorBoundary: ${errorDescription(error)}`);
         try {
-            const fragment = boundFallback(error, initContent);
+            const fragment = fallback.call(component, error, initContent);
             component.clear();
             component.appendFragment(fragment);
         } catch (e) {
@@ -1734,7 +1761,7 @@ export function ErrorBoundary(
 
     function initContent(): void {
         try {
-            const fragment = boundBody();
+            const fragment = body.call(component);
             component.clear();
             component.appendFragment(fragment);
         } catch (e) {
@@ -1920,7 +1947,7 @@ export function VirtualList<T extends object>(opts: VirtualListOptions<T>): Comp
     return container;
 
     function reconcile() {
-        const items = isStaticValue(itemsValue) ? itemsValue : itemsValue instanceof Observable ? itemsValue.get() : itemsValue();
+        const items = getValue(itemsValue);
         const n = items.length;
         const scrollPos = horizontal ? container.node.scrollLeft : container.node.scrollTop;
         const viewportSize = horizontal ? container.node.clientWidth : container.node.clientHeight;
@@ -2014,148 +2041,5 @@ export function VirtualList<T extends object>(opts: VirtualListOptions<T>): Comp
         }
         prevVisible = visibleKeys;
         visibleKeys = newVisible;
-    }
-}
-
-
-// Store hydration
-
-let _storeHydrationData: Record<string, unknown> | null = null;
-
-export function setStoreHydrationData(data: Record<string, unknown>) {
-    _storeHydrationData = data;
-}
-
-export function hasStoreHydrationData(): boolean {
-    return _storeHydrationData !== null;
-}
-
-export function readEmbeddedStoreData(): void {
-    if (typeof document === 'undefined') return;
-    const el = document.getElementById('__STORE_DATA__');
-    if (el) {
-        _storeHydrationData = JSON.parse(el.textContent!);
-        el.remove();
-    }
-}
-
-
-// Store system
-
-export type DeepReadonly<T> =
-    T extends Function ? T :
-    T extends (infer U)[] ? readonly DeepReadonly<U>[] :
-    T extends Map<infer K, infer V> ? ReadonlyMap<DeepReadonly<K>, DeepReadonly<V>> :
-    T extends Set<infer U> ? ReadonlySet<DeepReadonly<U>> :
-    T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } :
-    T;
-
-export type StoreView<T extends Store> = {
-    readonly [K in keyof T as K extends keyof Store ? never : K]:
-    T[K] extends (...args: infer A) => infer R ? (...args: A) => R :
-    DeepReadonly<T[K]>
-} & {
-    derived<R>(selector: (self: StoreView<T>) => R): () => R;
-    provide(component: Component): StoreView<T>;
-};
-
-export class Store {
-    private _generation = 0;
-    private _dispatching = false;
-
-    private static _contexts = new WeakMap<Function, Context<any>>();
-
-    private static _getContext(ctor: Function): Context<any> {
-        let ctx = Store._contexts.get(ctor);
-        if (!ctx) {
-            ctx = new Context(ctor.name || 'Store');
-            Store._contexts.set(ctor, ctx);
-        }
-        return ctx;
-    }
-
-    constructor() {
-        const storeProto = Store.prototype;
-        const proto = Object.getPrototypeOf(this);
-        for (const key of Object.getOwnPropertyNames(proto)) {
-            if (key === 'constructor') continue;
-            if (key in storeProto) continue;
-            const desc = Object.getOwnPropertyDescriptor(proto, key);
-
-            if (typeof desc?.value === 'function') {
-                // Wrap method as action: auto-increment generation + trigger update
-                const method = desc.value;
-                const self = this;
-                (this as any)[key] = function (...args: any[]) {
-                    const wasDispatching = self._dispatching;
-                    self._dispatching = true;
-                    try {
-                        return method.apply(self, args);
-                    } finally {
-                        self._generation++;
-                        if (!wasDispatching) {
-                            self._dispatching = false;
-                            triggerAppUpdate();
-                        }
-                    }
-                };
-            } else if (desc?.get) {
-                // Wrap getter with generation-based caching
-                const getter = desc.get;
-                const self = this;
-                let cachedGen = -1;
-                let cached: any;
-                Object.defineProperty(this, key, {
-                    get() {
-                        if (cachedGen !== self._generation) {
-                            cached = getter.call(self);
-                            cachedGen = self._generation;
-                        }
-                        return cached;
-                    },
-                    enumerable: true,
-                });
-            }
-        }
-
-    }
-
-    derived<R>(selector: (self: this) => R): () => R {
-        let cachedGen = -1;
-        let cached: R;
-        const self = this;
-        return () => {
-            if (cachedGen !== self._generation) {
-                cached = selector(self);
-                cachedGen = self._generation;
-            }
-            return cached;
-        };
-    }
-
-    provide(component: Component): this {
-        component.provideContext(Store._getContext(this.constructor), this as any);
-        return this;
-    }
-
-    static context<T extends Store>(this: new (...args: any[]) => T): Context<StoreView<T>> {
-        return Store._getContext(this);
-    }
-
-    static from<T extends Store>(this: new (...args: any[]) => T, component: Component): StoreView<T> {
-        return component.getContext(Store._getContext(this));
-    }
-
-    static create<T extends Store>(this: new () => T): StoreView<T> {
-        const instance = new this();
-        const hydrationKey = instance.constructor.name;
-        if (_storeHydrationData && hydrationKey in _storeHydrationData) {
-            Object.assign(instance, _storeHydrationData[hydrationKey] as object);
-            delete _storeHydrationData[hydrationKey];
-            if (Object.keys(_storeHydrationData).length === 0) {
-                _storeHydrationData = null;
-            }
-        }
-        return instance as StoreView<T>;
     }
 }

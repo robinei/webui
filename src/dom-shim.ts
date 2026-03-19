@@ -32,18 +32,20 @@ class FakeNode {
     }
 
     appendChild(child: FakeNode) { return this.insertBefore(child, null); }
-    addEventListener() {}
-    removeEventListener() {}
+    addEventListener() { }
+    removeEventListener() { }
 }
 
 // Node → Element → HTMLElement mirrors the real DOM hierarchy
 class FakeElement extends FakeNode {
-    setAttribute() {}
-    removeAttribute() {}
+    setAttribute() { }
+    removeAttribute() { }
 }
 
 class FakeHTMLElement extends FakeElement {
     style = new Proxy({} as Record<string, string>, { set: () => true });
+    focus() { }
+    blur() { }
 }
 
 class FakeText extends FakeNode {
@@ -51,8 +53,8 @@ class FakeText extends FakeNode {
     constructor(value: string) { super(); this.nodeValue = value; this.textContent = value; }
 }
 
-const fakeHistory = { replaceState() {}, pushState() {}, go() {} };
-const fakeWindow = { addEventListener() {}, removeEventListener() {}, scrollTo() {}, history: fakeHistory };
+const fakeHistory = { replaceState() { }, pushState() { }, go() { } };
+const fakeWindow = { addEventListener() { }, removeEventListener() { }, scrollTo() { }, history: fakeHistory };
 const fakeLocation = { pathname: '/', search: '', href: '/' };
 const fakeDocument = {
     createElement: (_tag: string) => new FakeHTMLElement(),
@@ -69,10 +71,10 @@ export function installFakeDOM(): void {
     g.location = fakeLocation;
     g.history = fakeHistory;
     g.window = fakeWindow;
-    g.ResizeObserver = class { observe() {} disconnect() {} };
-    g.requestAnimationFrame = () => {};
-    g.PopStateEvent = class PopStateEvent {};
-    g.Event = class Event {};
+    g.ResizeObserver = class { observe() { } disconnect() { } };
+    g.requestAnimationFrame = () => { };
+    g.PopStateEvent = class PopStateEvent { };
+    g.Event = class Event { };
     g.Node = FakeNode;
     g.Element = FakeElement;
     g.HTMLElement = FakeHTMLElement;

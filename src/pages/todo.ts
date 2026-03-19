@@ -1,4 +1,4 @@
-import { Store, type FragmentItem, HTML, If, For, Lazy, When } from '../core';
+import { memoFilter, type FragmentItem, HTML, If, For, Lazy, When } from '../core';
 
 const { div, input, button, span, h4 } = HTML;
 
@@ -10,52 +10,22 @@ interface TodoItem {
 }
 
 
-class TodoStore extends Store {
-    idCounter = 0;
-    items: TodoItem[] = [];
-    editing: string | null = null;
-
-    get todoItems() { return this.items.filter(i => !i.done); }
-    get doneItems() { return this.items.filter(i => i.done); }
-
-    addItem(title: string) {
-        this.items.push({ id: (this.idCounter++).toString(), title, done: false });
-    }
-
-    removeItem(item: TodoItem) {
-        const i = this.items.indexOf(item);
-        if (i >= 0) this.items.splice(i, 1);
-    }
-
-    toggleItem(item: TodoItem) {
-        item.done = !item.done;
-    }
-
-    setItemTitle(item: TodoItem, title: string) {
-        item.title = title;
-    }
-
-    setEditing(id: string | null) {
-        this.editing = id;
-    }
-
-    markAllDone() {
-        this.items.forEach(i => i.done = true);
-    }
-
-    unmarkAll() {
-        this.items.forEach(i => i.done = false);
-    }
-}
-
-
 export function TodoPage(): FragmentItem {
-    const store = TodoStore.create();
+    let idCounter = 0;
+    const items: TodoItem[] = [];
+    let editing: string | null = null;
 
-    store.addItem('Bake bread');
-    store.addItem('Clean dishes');
-    store.addItem('Take out trash');
-    store.addItem('Buy groceries');
+    const todoItems = memoFilter(items, i => !i.done);
+    const doneItems = memoFilter(items, i => i.done);
+
+    function addItem(title: string) {
+        items.push({ id: (idCounter++).toString(), title, done: false });
+    }
+
+    addItem('Bake bread');
+    addItem('Clean dishes');
+    addItem('Take out trash');
+    addItem('Buy groceries');
 
     function TodoItemView(getItem: () => TodoItem): FragmentItem {
         const item = getItem();
@@ -63,21 +33,21 @@ export function TodoPage(): FragmentItem {
             type: 'checkbox',
             checked: () => item.done,
             onchange() {
-                store.toggleItem(item);
+                item.done = !item.done;
             },
         });
 
         return div(
             { style: { display: 'flex', alignItems: 'center' } },
             checkbox,
-            If(() => store.editing !== item.id,
+            If(() => editing !== item.id,
                 [
                     span(() => item.title, {
                         style: { flexGrow: '1' },
-                        onclick() { store.setEditing(item.id); }
+                        onclick() { editing = item.id; }
                     }),
                     button('✎', {
-                        onclick() { store.setEditing(item.id); }
+                        onclick() { editing = item.id; }
                     }),
                 ],
                 Lazy(() => {
@@ -89,36 +59,40 @@ export function TodoPage(): FragmentItem {
                         },
                         value: () => item.title,
                         oninput(ev) {
-                            store.setItemTitle(item, (ev.target as any).value);
+                            item.title = (ev.target as any).value;
                         },
                         onkeydown(ev) {
                             if (ev.key === 'Enter') {
-                                finishEditing();
+                                finishEditing.call(this);
                             }
                         },
                         onmounted() {
                             setTimeout(() => editField.node.focus(), 0);
                         },
-                        onblur: finishEditing,
+                        onblur() { finishEditing.call(this); },
                     });
 
                     return [
                         editField,
                         button('✓', {
-                            onclick: finishEditing
+                            onclick() { finishEditing.call(this); }
                         }),
                     ];
                 }),
             ),
             button('❌', {
-                onclick() { store.removeItem(item); }
+                onclick() {
+                    const i = items.indexOf(item);
+                    if (i >= 0) items.splice(i, 1);
+                }
             }),
         );
 
-        function finishEditing() {
-            store.setEditing(null);
+        function finishEditing(this: any) {
+            editing = null;
             if (!item.title) {
-                store.removeItem(item);
+                const i = items.indexOf(item);
+                if (i >= 0) items.splice(i, 1);
             }
         }
     }
@@ -128,7 +102,7 @@ export function TodoPage(): FragmentItem {
         oninput() { },
         onkeydown(ev) {
             if (ev.key === 'Enter') {
-                onAddText();
+                onAddText.call(this);
             }
         },
         onmounted() {
@@ -136,9 +110,9 @@ export function TodoPage(): FragmentItem {
         },
     });
 
-    function onAddText() {
+    function onAddText(this: any) {
         if (textInput.node.value) {
-            store.addItem(textInput.node.value);
+            addItem(textInput.node.value);
             textInput.node.value = '';
         }
     }
@@ -149,7 +123,7 @@ export function TodoPage(): FragmentItem {
             textInput,
             button('Add', {
                 disabled: () => !textInput.node.value,
-                onclick: onAddText,
+                onclick() { onAddText.call(this); },
                 style: { marginLeft: '10px' },
             }),
         ),
@@ -159,21 +133,25 @@ export function TodoPage(): FragmentItem {
                 style: { marginTop: '20px', marginBottom: '5px' },
             }),
             button('All done!', {
-                disabled: () => store.todoItems.length === 0,
-                onclick() { store.markAllDone(); },
+                disabled: () => todoItems().length === 0,
+                onclick() {
+                    items.forEach(i => i.done = true);
+                },
             }),
-            For(() => store.todoItems, TodoItemView, item => item.id),
+            For(todoItems, TodoItemView, item => item.id),
         ),
 
-        When(() => store.doneItems.length > 0, div(
+        When(() => doneItems().length > 0, div(
             h4('Done:', {
                 style: { marginTop: '20px', marginBottom: '5px' },
             }),
             button('Unmark all', {
-                disabled: () => store.doneItems.length === 0,
-                onclick() { store.unmarkAll(); },
+                disabled: () => doneItems().length === 0,
+                onclick() {
+                    items.forEach(i => i.done = false);
+                },
             }),
-            For(() => store.doneItems, TodoItemView, item => item.id),
+            For(doneItems, TodoItemView, item => item.id),
         )),
     );
 }

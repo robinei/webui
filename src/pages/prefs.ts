@@ -1,40 +1,39 @@
-import { type FragmentItem, HTML, For, When } from '../core';
+import { type FragmentItem, HTML, For, When, Context, Component } from '../core';
 import { Outlet, createBlocker } from '../routing';
 import { prefsRoute, editPrefRoute } from '..';
 
+const { div, hr, br, ul, li, span, input, button } = HTML;
+
 interface Preference {
     readonly name: string;
-    readonly value: string;
+    value: string;
 }
 
-let preferences: ReadonlyArray<Preference> = [
-    { name: 'username', value: 'guest' },
-    { name: 'password', value: 'guest' },
-];
+class Preferences {
+    items: Preference[] = [
+        { name: 'username', value: 'guest' },
+        { name: 'password', value: 'guest' },
+    ];
 
-function findPref(prefs: ReadonlyArray<Preference>, name: string) {
-    for (const pref of prefs) {
-        if (pref.name === name) {
-            return pref;
+    set(name: string, value: string) {
+        for (const item of this.items) {
+            if (item.name === name) {
+                item.value = value;
+            }
         }
     }
-    return null;
-}
 
-function getPreference(prefs: ReadonlyArray<Preference>, name: string) {
-    return findPref(prefs, name)?.value ?? '';
-}
-
-function setPreference(prefs: ReadonlyArray<Preference>, name: string, value: string): Preference[] {
-    if (findPref(prefs, name)) {
-        return prefs.map(p => p.name !== name ? p : { ...p, value });
-    } else {
-        return [...prefs, { name, value }];
+    get(name: string): string {
+        for (const item of this.items) {
+            if (item.name === name) {
+                return item.value;
+            }
+        }
+        return '';
     }
 }
 
-
-const { div, hr, br, ul, li, span, input, button } = HTML;
+const PreferencesContext = new Context<Preferences>('PreferencesContext');
 
 export function PreferencesPage(): FragmentItem {
     return div(
@@ -42,72 +41,74 @@ export function PreferencesPage(): FragmentItem {
         hr(),
         Outlet(),
         hr(),
-    );
+    ).provideContext(PreferencesContext, new Preferences());
 }
 
 export function PreferencesListPage(): FragmentItem {
-    return ul(
-        For(preferences, function renderPrefListEntry(pref) {
+    return PreferencesContext.Consume(prefs => ul(
+        For(prefs.items, function renderPrefListEntry(pref) {
             return li(
                 pref.name,
                 ': ',
-                pref.value,
+                () => pref.value,
                 ' ',
                 editPrefRoute.Link({ name: pref.name }, 'edit'),
             );
-        })
-    );
+        }, pref => pref.name)
+    ));
 }
 
 export function EditPreferencePage({ name }: { name(): string }): FragmentItem {
-    let dirty = false;
-    const blocker = createBlocker(() => dirty);
+    return PreferencesContext.Consume(prefs => {
+        let dirty = false;
+        const blocker = createBlocker(() => dirty);
 
-    function save() {
-        preferences = setPreference(preferences, name(), textInput.node.value);
-        dirty = false;
-    }
+        function save() {
+            prefs.set(name(), textInput.node.value);
+            dirty = false;
+        }
 
-    function cancel() {
-        dirty = false;
-        prefsRoute.push({});
-    }
+        function cancel() {
+            dirty = false;
+            prefsRoute.push({});
+        }
 
-    const textInput = input({
-        value: () => getPreference(preferences, name()),
-        oninput() { dirty = true; },
-        onkeydown(ev) {
-            if (ev.key === 'Enter') {
-                save();
-                prefsRoute.push({});
-            }
-        },
-        onmounted() {
-            setTimeout(() => textInput.node.focus(), 25);
-        },
-    });
+        const textInput = input({
+            value: () => prefs.get(name()),
+            oninput() { dirty = true; },
+            onkeydown(ev) {
+                if (ev.key === 'Enter') {
+                    save();
+                    prefsRoute.push({});
+                }
+            },
+            onmounted() {
+                setTimeout(() => textInput.node.focus(), 25);
+            },
+        });
 
-    return blocker.connect(div(
-        'Editing ',
-        name,
-        br(),
-        textInput,
-        ' ',
-        button('Save', { onclick() { save(); prefsRoute.push({}); } }),
-        ' ',
-        button('Cancel', { onclick: cancel }),
-        When(() => blocker.isBlocked,
-            div(
-                br(),
-                span('Unsaved changes! '),
-                button('Leave', { onclick() { blocker.proceed(); } }),
-                ' ',
-                button('Stay', { onclick() { blocker.reset(); } }),
+        return blocker.connect(div(
+            'Editing ',
+            name,
+            br(),
+            textInput,
+            ' ',
+            button('Save', { onclick() { save(); prefsRoute.push({}); } }),
+            ' ',
+            button('Cancel', { onclick: cancel }),
+            When(() => blocker.isBlocked,
+                div(
+                    br(),
+                    span('Unsaved changes! '),
+                    button('Leave', { onclick() { blocker.proceed(); } }),
+                    ' ',
+                    button('Stay', { onclick() { blocker.reset(); } }),
+                ),
             ),
-        ),
-        br(),
-        editPrefRoute.Link({ name: 'password' }, 'password'),
-        br(),
-        editPrefRoute.Link({ name: 'username' }, 'username'),
-    ));
+            br(),
+            editPrefRoute.Link({ name: 'password' }, 'password'),
+            br(),
+            editPrefRoute.Link({ name: 'username' }, 'username'),
+        ));
+    });
 }

@@ -156,7 +156,7 @@ async function build() {
     return true;
 }
 
-function generateHtml(routeChunkUrls: string[], origin: string, storeData?: Record<string, unknown> | null, queryCache?: Record<string, unknown> | null): string {
+function generateHtml(routeChunkUrls: string[], origin: string, queryCache?: Record<string, unknown> | null): string {
     const inlinedUrls = new Set([...entryChunks, ...routeChunkUrls]);
 
     // All chunk URLs (everything except the entry point itself)
@@ -187,7 +187,6 @@ function generateHtml(routeChunkUrls: string[], origin: string, storeData?: Reco
     const importMap = JSON.stringify({ imports });
     const entryContent = rewriteImports(fileContents.get(entryUrl) || '');
 
-    const storeDataTag = storeData ? `\n    <script type="application/json" id="__STORE_DATA__">${JSON.stringify(storeData)}</script>` : '';
     const queryCacheTag = queryCache && Object.keys(queryCache).length
         ? `\n    <script type="application/json" id="__QUERY_CACHE__">${JSON.stringify(queryCache)}</script>`
         : '';
@@ -197,7 +196,7 @@ function generateHtml(routeChunkUrls: string[], origin: string, storeData?: Reco
 <head>
     <meta charset="utf-8">
     <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4//8/AAX+Av7czFnnAAAAAElFTkSuQmCC">
-    <style>${stylesContent}</style>${storeDataTag}${queryCacheTag}
+    <style>${stylesContent}</style>${queryCacheTag}
     <script type="importmap">${importMap}</script>
 </head>
 <body>
@@ -212,7 +211,7 @@ installFakeDOM();
 // Settlement tracking + query bind hooks — set once at startup, per-request state lives in each cloned root's tracker
 setServerHooks({
     onAsyncLoadStart: (c) => (c.getRoot() as any)._asyncLoadTracker?.onStart(),
-    onAsyncLoadEnd:   (c) => (c.getRoot() as any)._asyncLoadTracker?.onEnd(),
+    onAsyncLoadEnd: (c) => (c.getRoot() as any)._asyncLoadTracker?.onEnd(),
     onQueryBind: (c, key) => {
         const tracker = (c.getRoot() as any)._asyncLoadTracker;
         if (!tracker) return null;
@@ -298,20 +297,10 @@ const server = Bun.serve({
                 }
             }
 
-            // Call initStores if any matched routes have them
-            const initFns = router.getMatchedInitStores();
-            let storeData: Record<string, unknown> | null = null;
-            if (initFns.length > 0) {
-                storeData = {};
-                for (const fn of initFns) {
-                    Object.assign(storeData, await fn());
-                }
-            }
-
             // Prefetch queries by mounting the cloned router on a fake DOM
             const queryCache = await discoverQueries(url.pathname, url.search);
 
-            return new Response(generateHtml(routeChunks, url.origin, storeData, queryCache), {
+            return new Response(generateHtml(routeChunks, url.origin, queryCache), {
                 headers: { 'Content-Type': 'text/html' },
             });
         }

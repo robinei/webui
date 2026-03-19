@@ -32,8 +32,8 @@ function Benchmark(desc: string, iters: number, func: () => void) {
 }
 
 export function BenchmarkPage(): FragmentItem {
-    const domIters = 100000;
-    const argIters = 10000000;
+    const domIters = 1000000;
+    const argIters = 100000000;
 
     return Unsuspense(div(
         h4('Benchmarks'),
