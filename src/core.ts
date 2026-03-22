@@ -1915,6 +1915,7 @@ export class VirtualList<T extends object> extends Component<HTMLDivElement> {
 
         this.spacer = new Component(document.createElement('div'), 'VirtualList.spacer');
         this.spacer.node.style.position = 'relative';
+        this.spacer.node.style.overflow = 'hidden';
         this.appendChild(this.spacer);
 
         this.observer = new ResizeObserver(entries => this.onResize(entries));
