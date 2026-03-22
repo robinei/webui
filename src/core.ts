@@ -1871,113 +1871,181 @@ export interface VirtualListOptions<T extends object> {
     key?: (item: T) => unknown;
 }
 
-export function VirtualList<T extends object>(opts: VirtualListOptions<T>): Component<HTMLDivElement> {
-    const keyOf = opts.key ?? (item => item);
-    const buffer = opts.buffer ?? 3;
-    const horizontal = opts.direction === 'horizontal';
-    const estimateSize = opts.estimateSize;
-    const itemsValue = opts.items;
-    const renderFunc = opts.render;
+export class VirtualList<T extends object> extends Component<HTMLDivElement> {
+    private readonly keyOf: (item: T) => unknown;
+    private readonly buffer: number;
+    private readonly horizontal: boolean;
+    private readonly estimateSize: number;
+    private readonly itemsValue: Value<ReadonlyArray<T>>;
+    private readonly renderFunc: (item: T) => FragmentItem;
 
-    const wrapperMap = new Map<unknown, Component<HTMLDivElement>>();
-    const measuredSizes = new Map<unknown, number>();
-    let visibleKeys = new Set<unknown>();
-    let prevVisible = new Set<unknown>();
-    let offsets = new Float64Array(0);
-    let offsetsDirty = true;
-    let lastItemCount = -1;
-    let lastSpacerSize = -1;
-    let reconcileGeneration = 0;
-    let lastReconciledGeneration = -1;
+    private readonly spacer: Component<HTMLDivElement>;
+    private readonly wrapperMap = new Map<unknown, Component<HTMLDivElement>>();
+    private readonly measuredSizes = new Map<unknown, number>();
+    private readonly keyToIndex = new Map<unknown, number>();
+    private readonly lastSetOffset = new Map<unknown, number>();
+    private readonly wrapperToKey = new Map<Element, unknown>();
+    private readonly observer: ResizeObserver;
 
-    // Measure actual item sizes
-    const wrapperToKey = new Map<Element, unknown>();
-    let rafPending = false;
-    const observer = new ResizeObserver(entries => {
+    private visibleKeys = new Set<unknown>();
+    private prevVisible = new Set<unknown>();
+    private offsets = new Float64Array(0);
+    private offsetsDirty = true;
+    private lastItemCount = -1;
+    private lastSpacerSize = -1;
+    private reconcileGeneration = 0;
+    private lastReconciledGeneration = -1;
+    private lastItemsArray: ReadonlyArray<T> | null = null;
+    private firstDirtyIndex = 0;
+    private rafPending = false;
+    private measuredCount = 0;
+    private measuredTotal = 0;
+
+    constructor(opts: VirtualListOptions<T>) {
+        super(document.createElement('div'), 'VirtualList');
+        this.keyOf = opts.key ?? (item => item as unknown);
+        this.buffer = opts.buffer ?? 3;
+        this.horizontal = opts.direction === 'horizontal';
+        this.estimateSize = opts.estimateSize;
+        this.itemsValue = opts.items;
+        this.renderFunc = opts.render;
+
+        this.node.style.overflow = 'auto';
+        if (this.horizontal) this.node.style.overflowY = 'hidden';
+
+        this.spacer = new Component(document.createElement('div'), 'VirtualList.spacer');
+        this.spacer.node.style.position = 'relative';
+        this.appendChild(this.spacer);
+
+        this.observer = new ResizeObserver(entries => this.onResize(entries));
+
+        this.addEventListener('scroll', () => {
+            ++this.reconcileGeneration;
+            this.reconcile();
+        });
+        this.addUpdateListener(() => this.reconcile());
+        this.addMountedListener(() => { requestAnimationFrame(() => this.reconcile()); });
+        this.addUnmountListener(() => this.observer.disconnect());
+    }
+
+    scrollToIndex(index: number, behavior?: ScrollBehavior): void {
+        const items = getValue(this.itemsValue);
+        const n = items.length;
+        if (index < 0 || index >= n) return;
+        if (this.firstDirtyIndex < n) {
+            if (this.offsets.length < n + 1) {
+                this.offsets = new Float64Array(n + 1);
+                this.firstDirtyIndex = 0;
+            }
+            for (let i = this.firstDirtyIndex; i < n; i++) {
+                this.offsets[i + 1] = this.offsets[i]! + this.sizeOf(this.keyOf(items[i]!));
+            }
+            this.firstDirtyIndex = n;
+        }
+        const offset = this.offsets[index]!;
+        this.node.scrollTo({ [this.horizontal ? 'left' : 'top']: offset, behavior: behavior ?? 'auto' });
+    }
+
+    private sizeOf(key: unknown): number {
+        return this.measuredSizes.get(key) ?? (this.measuredCount > 0 ? this.measuredTotal / this.measuredCount : this.estimateSize);
+    }
+
+    private onResize(entries: ResizeObserverEntry[]): void {
         let dirty = false;
         for (const entry of entries) {
-            const key = wrapperToKey.get(entry.target);
+            const key = this.wrapperToKey.get(entry.target);
             if (key === undefined) continue;
-            const size = horizontal
+            const size = this.horizontal
                 ? entry.borderBoxSize[0]!.inlineSize
                 : entry.borderBoxSize[0]!.blockSize;
-            if (size > 0 && measuredSizes.get(key) !== size) {
-                measuredSizes.set(key, size);
+            if (size > 0 && this.measuredSizes.get(key) !== size) {
+                const old = this.measuredSizes.get(key);
+                if (old !== undefined) {
+                    this.measuredTotal += size - old;
+                } else {
+                    this.measuredCount++;
+                    this.measuredTotal += size;
+                }
+                this.measuredSizes.set(key, size);
                 dirty = true;
+                const idx = this.keyToIndex.get(key);
+                if (idx !== undefined) {
+                    this.firstDirtyIndex = Math.min(this.firstDirtyIndex, idx);
+                }
             }
         }
         if (dirty) {
-            offsetsDirty = true;
-            if (!rafPending) {
-                rafPending = true;
+            this.offsetsDirty = true;
+            if (!this.rafPending) {
+                this.rafPending = true;
                 requestAnimationFrame(() => {
-                    rafPending = false;
-                    reconcile();
+                    this.rafPending = false;
+                    this.reconcile();
                 });
             }
         }
-    });
-
-    function sizeOf(key: unknown): number {
-        return measuredSizes.get(key) ?? estimateSize;
     }
 
-    const spacer = new Component(document.createElement('div'), 'VirtualList.spacer');
-    spacer.node.style.position = 'relative';
-
-    const container = new Component(document.createElement('div'), 'VirtualList.container');
-    container.node.style.overflow = 'auto';
-    if (horizontal) {
-        container.node.style.overflowY = 'hidden';
-    }
-    container.appendChild(spacer);
-
-    container.addEventListener('scroll', function () {
-        ++reconcileGeneration;
-        reconcile();
-    });
-    container.addUpdateListener(reconcile);
-    container.addMountedListener(function () {
-        requestAnimationFrame(reconcile);
-    });
-    container.addUnmountListener(function () {
-        observer.disconnect();
-    });
-
-    return container;
-
-    function reconcile() {
-        const items = getValue(itemsValue);
+    private reconcile(): void {
+        const items = getValue(this.itemsValue);
         const n = items.length;
-        const scrollPos = horizontal ? container.node.scrollLeft : container.node.scrollTop;
-        const viewportSize = horizontal ? container.node.clientWidth : container.node.clientHeight;
+        const scrollPos = this.horizontal ? this.node.scrollLeft : this.node.scrollTop;
+        const viewportSize = this.horizontal ? this.node.clientWidth : this.node.clientHeight;
 
         if (viewportSize === 0) return;
 
         // Skip if already reconciled this generation (avoids double reconcile from scroll + updateRoot)
-        if (reconcileGeneration === lastReconciledGeneration && !offsetsDirty && n === lastItemCount) return;
-        lastReconciledGeneration = reconcileGeneration;
+        if (this.reconcileGeneration === this.lastReconciledGeneration && !this.offsetsDirty && n === this.lastItemCount && items === this.lastItemsArray) return;
+        this.lastReconciledGeneration = this.reconcileGeneration;
+
+        const itemsChanged = items !== this.lastItemsArray;
+        if (itemsChanged) {
+            this.keyToIndex.clear();
+            for (let i = 0; i < n; i++) this.keyToIndex.set(this.keyOf(items[i]!), i);
+            this.firstDirtyIndex = 0;
+
+            for (const [key, wrapper] of this.wrapperMap) {
+                if (!this.keyToIndex.has(key)) {
+                    if (this.visibleKeys.has(key)) {
+                        this.spacer.removeChild(wrapper);
+                        this.visibleKeys.delete(key);
+                    }
+                    this.observer.unobserve(wrapper.node);
+                    this.wrapperToKey.delete(wrapper.node);
+                    const old = this.measuredSizes.get(key);
+                    if (old !== undefined) {
+                        this.measuredCount--;
+                        this.measuredTotal -= old;
+                        this.measuredSizes.delete(key);
+                    }
+                    this.lastSetOffset.delete(key);
+                    this.wrapperMap.delete(key);
+                }
+            }
+        }
 
         // Recompute cumulative offsets only when measurements or items changed
-        if (offsetsDirty || n !== lastItemCount) {
-            if (offsets.length < n + 1) {
-                offsets = new Float64Array(n + 1);
+        if (this.offsetsDirty || n !== this.lastItemCount || itemsChanged) {
+            if (this.offsets.length < n + 1) {
+                this.offsets = new Float64Array(n + 1);
+                this.firstDirtyIndex = 0;
             }
-            for (let i = 0; i < n; i++) {
-                offsets[i + 1] = offsets[i]! + sizeOf(keyOf(items[i]!));
+            for (let i = this.firstDirtyIndex; i < n; i++) {
+                this.offsets[i + 1] = this.offsets[i]! + this.sizeOf(this.keyOf(items[i]!));
             }
-            offsetsDirty = false;
-            lastItemCount = n;
+            this.firstDirtyIndex = n;
+            this.offsetsDirty = false;
+            this.lastItemCount = n;
 
-            const spacerSize = Math.round(offsets[n]!);
-            if (spacerSize !== lastSpacerSize) {
-                if (horizontal) {
-                    spacer.node.style.width = spacerSize + 'px';
-                    spacer.node.style.height = '100%';
+            const spacerSize = Math.round(this.offsets[n]!);
+            if (spacerSize !== this.lastSpacerSize) {
+                if (this.horizontal) {
+                    this.spacer.node.style.width = spacerSize + 'px';
+                    this.spacer.node.style.height = '100%';
                 } else {
-                    spacer.node.style.height = spacerSize + 'px';
+                    this.spacer.node.style.height = spacerSize + 'px';
                 }
-                lastSpacerSize = spacerSize;
+                this.lastSpacerSize = spacerSize;
             }
         }
 
@@ -1985,61 +2053,67 @@ export function VirtualList<T extends object>(opts: VirtualListOptions<T>): Comp
         let lo = 0, hi = n;
         while (lo < hi) {
             const mid = (lo + hi) >>> 1;
-            if (offsets[mid + 1]! <= scrollPos) lo = mid + 1;
+            if (this.offsets[mid + 1]! <= scrollPos) lo = mid + 1;
             else hi = mid;
         }
-        const start = Math.max(0, lo - buffer);
+        const firstVisible = lo;
+        const start = Math.max(0, firstVisible - this.buffer);
 
         // Binary search for first item past viewport (first i where offsets[i] >= scrollPos + viewportSize)
-        lo = start; hi = n;
+        lo = firstVisible; hi = n;
         while (lo < hi) {
             const mid = (lo + hi) >>> 1;
-            if (offsets[mid]! < scrollPos + viewportSize) lo = mid + 1;
+            if (this.offsets[mid]! < scrollPos + viewportSize) lo = mid + 1;
             else hi = mid;
         }
-        const end = Math.min(n, lo + buffer);
+        const end = Math.min(n, lo + this.buffer);
 
         // Reuse Set from previous reconcile
-        const newVisible = prevVisible;
+        const newVisible = this.prevVisible;
         newVisible.clear();
 
         for (let i = start; i < end; i++) {
             const item = items[i]!;
-            const key = keyOf(item);
+            const key = this.keyOf(item);
             newVisible.add(key);
 
-            let wrapper = wrapperMap.get(key);
+            let wrapper = this.wrapperMap.get(key);
             if (!wrapper) {
                 wrapper = new Component(document.createElement('div'), 'VirtualList.item');
                 wrapper.node.style.position = 'absolute';
-                if (horizontal) {
+                if (this.horizontal) {
                     wrapper.node.style.top = '0';
                     wrapper.node.style.bottom = '0';
                 } else {
                     wrapper.node.style.left = '0';
                     wrapper.node.style.right = '0';
                 }
-                wrapper.appendFragment(renderFunc(item));
-                wrapperMap.set(key, wrapper);
-                wrapperToKey.set(wrapper.node, key);
-                observer.observe(wrapper.node);
+                wrapper.appendFragment(this.renderFunc(item));
+                this.wrapperMap.set(key, wrapper);
+                this.wrapperToKey.set(wrapper.node, key);
+                this.observer.observe(wrapper.node);
             }
 
-            // Reposition (transform is composite-only, cheap even when unchanged)
-            wrapper.node.style.transform = horizontal
-                ? `translateX(${offsets[i]}px)` : `translateY(${offsets[i]}px)`;
+            // Reposition — skip write when offset unchanged
+            const offset = this.offsets[i]!;
+            if (this.lastSetOffset.get(key) !== offset) {
+                wrapper.node.style.transform = this.horizontal
+                    ? `translateX(${offset}px)` : `translateY(${offset}px)`;
+                this.lastSetOffset.set(key, offset);
+            }
 
-            if (!visibleKeys.has(key)) {
-                spacer.appendChild(wrapper);
+            if (!this.visibleKeys.has(key)) {
+                this.spacer.appendChild(wrapper);
             }
         }
 
-        for (const key of visibleKeys) {
+        for (const key of this.visibleKeys) {
             if (!newVisible.has(key)) {
-                spacer.removeChild(wrapperMap.get(key)!);
+                this.spacer.removeChild(this.wrapperMap.get(key)!);
             }
         }
-        prevVisible = visibleKeys;
-        visibleKeys = newVisible;
+        this.prevVisible = this.visibleKeys;
+        this.visibleKeys = newVisible;
+        this.lastItemsArray = items;
     }
 }

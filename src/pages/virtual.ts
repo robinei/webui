@@ -29,7 +29,7 @@ export function VirtualListPage(): FragmentItem {
 
     return [
         h4('Vertical (10,000 variable-height items)'),
-        VirtualList({
+        new VirtualList({
             items,
             estimateSize: 60,
             render: item => div({
@@ -50,7 +50,7 @@ export function VirtualListPage(): FragmentItem {
         }).setStyle({ height: '400px' }),
 
         h4('Horizontal'),
-        VirtualList({
+        new VirtualList({
             items,
             estimateSize: 120,
             direction: 'horizontal',
