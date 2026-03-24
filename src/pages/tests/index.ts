@@ -10,6 +10,7 @@ import { utilSuite } from './util';
 import { routingSuite } from './routing';
 import { observableSuite } from './observable';
 import { virtualListSuite } from './virtuallist';
+import { exitAnimationSuite } from './exit-animation';
 
 const { div, span, button, h2, h3, pre } = HTML;
 
@@ -143,10 +144,11 @@ const s = css({
     failed: { color: '#f87171' },
     pending: { color: '#64748b' },
     sandbox: {
-        position: 'absolute',
-        width: '0',
-        height: '0',
-        overflow: 'hidden',
+        position: 'fixed',
+        left: '-10000px',
+        top: '-10000px',
+        width: '1000px',
+        height: '1000px',
         opacity: '0',
         pointerEvents: 'none',
     },
@@ -162,6 +164,7 @@ const allSuites: TestSuite[] = [
     routingSuite,
     observableSuite,
     virtualListSuite,
+    exitAnimationSuite,
 ];
 
 export function TestsPage(): FragmentItem {

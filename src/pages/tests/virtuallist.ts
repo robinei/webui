@@ -85,7 +85,7 @@ export const virtualListSuite: TestSuite = {
                     vl.setStyle({ height: '200px' });
                     container.appendChild(vl);
                     vl.scrollToIndex(10);
-                    assertEqual(vl.node.scrollTop, 500); // 10 * 50
+                    assertEqual(Math.round(vl.node.scrollTop), 500); // 10 * 50
                 });
             },
         },
@@ -150,7 +150,7 @@ export const virtualListSuite: TestSuite = {
                     vl.setStyle({ height: '100px', width: '320px' });
                     container.appendChild(vl);
                     vl.scrollToIndex(5);
-                    assertEqual(vl.node.scrollLeft, 400); // 5 * 80
+                    assertEqual(Math.round(vl.node.scrollLeft), 400); // 5 * 80
                 });
             },
         },

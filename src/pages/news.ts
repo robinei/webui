@@ -1,4 +1,4 @@
-import { HTML, For, type FragmentItem, Suspense, With, When, type DeepReadonly } from '../core';
+import { HTML, For, type FragmentItem, Suspense, With, When } from '../core';
 import { Outlet } from '../routing';
 import { css } from '../css';
 import { newsRoute, newsPostRoute } from '..';
@@ -175,7 +175,7 @@ export function NewsListPage(): FragmentItem {
 export function NewsPostPage({ id }: { id(): number }): FragmentItem {
     const q = postQuery.bind(id);
 
-    function Comment(comment: () => DeepReadonly<HNComment>): FragmentItem {
+    function Comment(comment: () => HNComment): FragmentItem {
         return With(comment, c => div({ className: s.comment },
             !c.author && !c.text
                 ? span({ className: s.deleted }, '[deleted]')

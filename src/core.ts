@@ -1,6 +1,12 @@
 import { type WritableKeys, errorDescription, isPlainObject, type ThinVec, tvPush, tvForEach } from './util';
 import { Observable, Effect, Signal, DelegatedSignal, observableProxy, signalProxy, type ObservableProxy, type SignalProxy, type EffectOptions } from './observable';
 
+declare global {
+    interface Document {
+        startViewTransition(callback: () => void): { finished: Promise<void> };
+    }
+}
+
 export let onAsyncLoadStart: ((c: Component) => void) | undefined;
 export let onAsyncLoadEnd: ((c: Component) => void) | undefined;
 export let onQueryBind: ((component: Component, key: string) => object | null) | undefined;
@@ -100,6 +106,7 @@ type ComponentAttributes<N extends Node | null> = {
     onmounted?: (this: Component<N>) => void | Promise<void>;
     onunmount?: (this: Component<N>) => void;
     onupdate?: (this: Component<N>) => void | false;
+    onexit?: (this: Component<N>, done: () => void) => void;
 };
 
 export type Attributes<N extends Node | null> = PropertyAttributes<N> & EventAttributes<N> & ComponentAttributes<N>;
@@ -160,6 +167,9 @@ export class Component<out N extends Node | null = Node | null> {
     private suspenseCount: number;
     private suspenseHandler: ((count: number) => void) | undefined;
 
+    private exitHandler: ((done: () => void) => void) | undefined;
+    private exitCleanup: (() => void) | undefined;
+
     private contextValues: Map<Context<unknown>, unknown> | undefined;
 
     // Scratch field used by replaceChildren for reconciliation. -1 = not participating,
@@ -189,6 +199,9 @@ export class Component<out N extends Node | null = Node | null> {
 
         this.suspenseCount = 0;
         this.suspenseHandler = undefined;
+
+        this.exitHandler = undefined;
+        this.exitCleanup = undefined;
 
         this.contextValues = undefined;
 
@@ -250,6 +263,19 @@ export class Component<out N extends Node | null = Node | null> {
         if (unhandled) {
             this.unhandledError = undefined;
             this.injectError(unhandled);
+        }
+        return this;
+    }
+
+    setExitHandler(handler: (this: Component<N>, done: () => void) => void): Component<N> {
+        this.exitHandler = handler;
+        return this;
+    }
+
+    cancelExit(): Component<N> {
+        this.exitHandler = undefined;
+        if (this.exitCleanup) {
+            this.exitCleanup();
         }
         return this;
     }
@@ -486,6 +512,9 @@ export class Component<out N extends Node | null = Node | null> {
                     case 'onunmount':
                         this.addUnmountListener(value);
                         break;
+                    case 'onexit':
+                        this.setExitHandler(value);
+                        break;
                     default:
                         this.addEventListener(name.substring(2) as any, value);
                         break;
@@ -536,6 +565,9 @@ export class Component<out N extends Node | null = Node | null> {
     insertBefore(child: Component, before?: Component): Component<N> {
         if (child === this) {
             throw new Error('cannot attach component to itself');
+        }
+        if (child.exitCleanup) {
+            child.exitCleanup(); // cancel in-progress exit, remove lingering DOM nodes
         }
         if (child.parent) {
             throw new Error('component is already attached to a component');
@@ -626,7 +658,11 @@ export class Component<out N extends Node | null = Node | null> {
         if (!child.detached) {
             const container = this.getChildContainerNode();
             if (container) {
-                child.removeNodesFrom(container);
+                if (child.exitHandler) {
+                    child.beginExit(container);
+                } else {
+                    child.removeNodesFrom(container);
+                }
             }
         }
 
@@ -642,6 +678,27 @@ export class Component<out N extends Node | null = Node | null> {
         }
 
         return this;
+    }
+
+    private beginExit(container: Node): void {
+        const handler = this.exitHandler!;
+        this.exitHandler = undefined;
+
+        let cleaned = false;
+        const cleanup = () => {
+            if (cleaned) return;
+            cleaned = true;
+            this.exitCleanup = undefined;
+            this.removeNodesFrom(container);
+        };
+        this.exitCleanup = cleanup;
+
+        try {
+            handler.call(this, cleanup);
+        } catch (e) {
+            cleanup();
+            console.error('exit handler error:', e);
+        }
     }
 
     removeChildren(children: Component[]): Component<N> {
@@ -864,6 +921,34 @@ export class Component<out N extends Node | null = Node | null> {
             this.removeChild(child);
         }
         return this;
+    }
+
+    forceClear(): Component<N> {
+        for (let c = this.firstChild; c; c = c.nextSibling) {
+            c.cancelExit();
+        }
+        this.clear();
+        // Remove any lingering DOM from already-unlinked exiting components
+        const container = this.getChildContainerNode();
+        if (container) {
+            while (container.firstChild) {
+                container.removeChild(container.firstChild);
+            }
+        }
+        return this;
+    }
+
+    withViewTransition(fn: () => void): false {
+        const doUpdate = () => {
+            fn();
+            this.updateRoot();
+        };
+        if (document.startViewTransition) {
+            document.startViewTransition(doUpdate);
+        } else {
+            doUpdate();
+        }
+        return false;
     }
 
     mount(): Component<N> {
@@ -1405,6 +1490,31 @@ export function DynamicText(value: Value<Primitive>): Component<Text> {
     return new Component(document.createTextNode('')).addValueWatcher(value, function onDynamicTextChanged(primitive) {
         this.node.nodeValue = primitive?.toString() ?? '';
     });
+}
+
+
+const globalCssRefs = new Map<string, { style: HTMLStyleElement; count: number }>();
+
+export function GlobalCss(cssText: string): Component<null> {
+    return new Component(null, 'GlobalCss')
+        .addMountedListener(function () {
+            let entry = globalCssRefs.get(cssText);
+            if (!entry) {
+                const style = document.createElement('style');
+                style.textContent = cssText;
+                document.head.appendChild(style);
+                entry = { style, count: 0 };
+                globalCssRefs.set(cssText, entry);
+            }
+            entry.count++;
+        })
+        .addUnmountListener(function () {
+            const entry = globalCssRefs.get(cssText);
+            if (entry && --entry.count === 0) {
+                entry.style.remove();
+                globalCssRefs.delete(cssText);
+            }
+        });
 }
 
 

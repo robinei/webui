@@ -199,6 +199,10 @@ const modalStyles = css({
         alignItems: 'center',
         justifyContent: 'center',
         zIndex: '1000',
+        transition: 'opacity 0.35s ease',
+        '@starting-style': {
+            opacity: '0',
+        },
     },
     modal: {
         background: '#1e293b',
@@ -207,6 +211,11 @@ const modalStyles = css({
         padding: '24px 32px',
         minWidth: '260px',
         boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+        transition: 'opacity 0.35s ease, transform 0.35s ease',
+        '@starting-style': {
+            opacity: '0',
+            transform: 'translate(-50%,-50%) scale(0.95)',
+        },
     },
     title: {
         fontWeight: 'bold',
@@ -231,12 +240,23 @@ function PortalDemo(): FragmentItem {
             Portal(document.body,
                 div({
                     className: modalStyles.overlay,
-                    onclick() { open = false; }
+                    onclick() { open = false; },
+                    onexit(done) {
+                        this.node.style.opacity = '0';
+                        this.node.addEventListener('transitionend', done, { once: true });
+                        setTimeout(done, 450);
+                    },
                 }),
                 div({
                     className: modalStyles.modal,
                     style: { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', zIndex: '1001' },
-                    onclick(ev) { ev.stopPropagation(); }
+                    onclick(ev) { ev.stopPropagation(); },
+                    onexit(done) {
+                        this.node.style.opacity = '0';
+                        this.node.style.transform = 'translate(-50%,-50%) scale(0.95)';
+                        this.node.addEventListener('transitionend', done, { once: true });
+                        setTimeout(done, 450);
+                    },
                 },
                     div({ className: modalStyles.title }, 'Portal modal (two top-level children)'),
                     p('Count: ', () => count),

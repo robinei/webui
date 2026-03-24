@@ -57,6 +57,43 @@ export function css<T extends StyleSheet>(sheet: T): CssResult<T> {
     return classMap;
 }
 
+type GlobalStyleSheet = { [selector: string]: StyleProperties | { [selector: string]: StyleProperties } };
+
+export function compileGlobalCss(sheet: GlobalStyleSheet): string {
+    const keyframes = new Map<string, string>();
+    for (const name in sheet) {
+        if (name.startsWith('@keyframes ')) {
+            keyframes.set(name.slice(11), name.slice(11));
+        }
+    }
+
+    let rules = '';
+    for (const name in sheet) {
+        if (name.startsWith('@keyframes ')) {
+            let inner = '';
+            const blocks = sheet[name] as { [stop: string]: StyleProperties };
+            for (const stop in blocks) {
+                inner += compileRule(stop, blocks[stop]!, keyframes);
+            }
+            rules += `@keyframes ${name.slice(11)}{${inner}}`;
+        } else if (name[0] === '@') {
+            let inner = '';
+            const block = sheet[name] as { [selector: string]: StyleProperties };
+            for (const innerName in block) {
+                const selector = innerName[0] === '.' || innerName[0] === '#' || innerName[0] === ':' || innerName[0] === '[' || innerName.includes('(')
+                    ? innerName : `.${innerName}`;
+                inner += compileRule(selector, block[innerName]!, keyframes);
+            }
+            rules += `${name}{${inner}}`;
+        } else {
+            const selector = name[0] === '.' || name[0] === '#' || name[0] === ':' || name[0] === '[' || name.includes('(')
+                ? name : `.${name}`;
+            rules += compileRule(selector, sheet[name] as StyleProperties, keyframes);
+        }
+    }
+    return rules;
+}
+
 function compileRule(selector: string, props: StyleProperties, keyframes: Map<string, string>): string {
     let declarations = '';
     let nested = '';
