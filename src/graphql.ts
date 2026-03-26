@@ -26,6 +26,7 @@ type FragmentMarker = {
     readonly directive: string;
     readonly optional: boolean;
     readonly extraVars: GQLVariable[];
+    readonly name?: string;
 };
 
 type FieldMeta = {
@@ -41,6 +42,7 @@ type GQLNode<T, V extends GQLVariable<any, any> = never> = {
     readonly fragment: string;
     readonly vars: GQLVariable[];
     readonly meta?: FieldMeta;
+    readonly definitions?: string[];
     readonly parse: (data: unknown) => T;
 };
 
@@ -144,6 +146,7 @@ function wrap<T>(node: GQLNode<any, any>, overrides: {
         fragment: overrides.fragment ?? node.fragment,
         vars: overrides.vars ?? node.vars,
         meta: overrides.meta ?? node.meta,
+        definitions: node.definitions,
         parse: overrides.parse,
     };
 }
@@ -165,6 +168,7 @@ function lazy<T, V extends GQLVariable<any, any>>(thunk: () => GQLNode<T, V>): G
         get fragment() { return resolve().fragment; },
         get vars() { return resolve().vars; },
         get meta() { return resolve().meta; },
+        get definitions() { return resolve().definitions; },
         parse(data) { return resolve().parse(data); },
     };
 }
@@ -229,13 +233,24 @@ type DeferFields<F extends SelectionFields> = {
 type DeferOpts = { label?: string; if?: GQLVariable<string, boolean> };
 type StreamOpts = { initialCount?: number; label?: string; if?: GQLVariable<string, boolean> };
 
-function directive<T, V extends GQLVariable<any, any>>(dir: string, node: GQLNode<T, V>): GQLNode<T, V> {
-    return {
-        _type: null as any, _vars: null as any,
-        fragment: node.fragment, vars: node.vars,
-        meta: { ...node.meta, directive: node.meta?.directive ? `${dir} ${node.meta.directive}` : dir },
-        parse: node.parse,
-    };
+function directive<T, V extends GQLVariable<any, any>>(dir: string, node: GQLNode<T, V>): GQLNode<T, V>;
+function directive<F extends SelectionFields>(dir: string, fields: F): F;
+function directive(dir: string, nodeOrFields: GQLNode<any, any> | SelectionFields): GQLNode<any, any> | SelectionFields {
+    if ('_type' in nodeOrFields) {
+        const node = nodeOrFields as GQLNode<any, any>;
+        return {
+            _type: null as any, _vars: null as any,
+            fragment: node.fragment, vars: node.vars,
+            meta: { ...node.meta, directive: node.meta?.directive ? `${dir} ${node.meta.directive}` : dir },
+            parse: node.parse,
+        };
+    }
+    const marker: FragmentMarker = { directive: dir, optional: false, extraVars: [] };
+    const result: SelectionFields = {};
+    for (const [key, node] of Object.entries(nodeOrFields)) {
+        result[key] = { ...node, meta: { ...node.meta, fragment: marker } };
+    }
+    return result;
 }
 
 function skip<T, V extends GQLVariable<any, any>, N extends string>(
@@ -246,24 +261,23 @@ function skip<F extends SelectionFields, N extends string>(
     variable: GQLVariable<N, boolean>,
     fields: F,
 ): DeferFields<F>;
-function skip(variable: GQLVariable<string, boolean>, nodeOrFields: any): any {
-    if ('parse' in nodeOrFields) {
-        // Single field
+function skip(variable: GQLVariable<string, boolean>, nodeOrFields: GQLNode<any, any> | SelectionFields): GQLNode<any, any> | SelectionFields {
+    if ('_type' in nodeOrFields) {
+        const node = nodeOrFields as GQLNode<any, any>;
         return {
             _type: null as any, _vars: null as any,
-            fragment: nodeOrFields.fragment, vars: [...nodeOrFields.vars, variable],
-            meta: { ...nodeOrFields.meta, directive: `@skip(if: $${variable.varName})${nodeOrFields.meta?.directive ? ' ' + nodeOrFields.meta.directive : ''}` },
+            fragment: node.fragment, vars: [...node.vars, variable],
+            meta: { ...node.meta, directive: `@skip(if: $${variable.varName})${node.meta?.directive ? ' ' + node.meta.directive : ''}` },
             parse(data: unknown) {
                 if (data === undefined) return undefined;
-                return nodeOrFields.parse(data);
+                return node.parse(data);
             },
         };
     }
-    // Group spread
     const marker: FragmentMarker = { directive: `@skip(if: $${variable.varName})`, optional: true, extraVars: [variable] };
-    const result: any = {};
+    const result: SelectionFields = {};
     for (const [key, node] of Object.entries(nodeOrFields)) {
-        result[key] = { ...(node as any), meta: { ...(node as any).meta, fragment: marker } };
+        result[key] = { ...node, meta: { ...node.meta, fragment: marker } };
     }
     return result;
 }
@@ -276,32 +290,22 @@ function include<F extends SelectionFields, N extends string>(
     variable: GQLVariable<N, boolean>,
     fields: F,
 ): DeferFields<F>;
-function include(variable: GQLVariable<string, boolean>, nodeOrFields: any): any {
-    if ('parse' in nodeOrFields) {
-        // Single field
+function include(variable: GQLVariable<string, boolean>, nodeOrFields: GQLNode<any, any> | SelectionFields): GQLNode<any, any> | SelectionFields {
+    if ('_type' in nodeOrFields) {
+        const node = nodeOrFields as GQLNode<any, any>;
         return {
             _type: null as any, _vars: null as any,
-            fragment: nodeOrFields.fragment, vars: [...nodeOrFields.vars, variable],
-            meta: { ...nodeOrFields.meta, directive: `@include(if: $${variable.varName})${nodeOrFields.meta?.directive ? ' ' + nodeOrFields.meta.directive : ''}` },
+            fragment: node.fragment, vars: [...node.vars, variable],
+            meta: { ...node.meta, directive: `@include(if: $${variable.varName})${node.meta?.directive ? ' ' + node.meta.directive : ''}` },
             parse(data: unknown) {
                 if (data === undefined) return undefined;
-                return nodeOrFields.parse(data);
+                return node.parse(data);
             },
         };
     }
-    // Group spread
     const marker: FragmentMarker = { directive: `@include(if: $${variable.varName})`, optional: true, extraVars: [variable] };
-    const result: any = {};
+    const result: SelectionFields = {};
     for (const [key, node] of Object.entries(nodeOrFields)) {
-        result[key] = { ...(node as any), meta: { ...(node as any).meta, fragment: marker } };
-    }
-    return result;
-}
-
-function fragment<F extends SelectionFields>(dir: string, fields: F): F {
-    const marker: FragmentMarker = { directive: dir, optional: false, extraVars: [] };
-    const result: any = {};
-    for (const [key, node] of Object.entries(fields)) {
         result[key] = { ...node, meta: { ...node.meta, fragment: marker } };
     }
     return result;
@@ -391,17 +395,29 @@ function select<F extends SelectionFields>(fields: F): GQLNode<InferSelection<F>
         allVars.push(...node.vars);
     }
 
-    // Emit inline fragment groups
+    // Emit fragment groups (inline or named)
+    const allDefs: string[] = [];
     for (const [marker, group] of fragmentGroups) {
         const innerParts = group.map(([key, node]) => emitField(key, node));
-        parts.push(`... ${marker.directive} { ${innerParts.join(' ')} }`);
+        if (marker.name) {
+            parts.push(`...${marker.name}`);
+            allDefs.push(`fragment ${marker.directive} { ${innerParts.join(' ')} }`);
+        } else {
+            parts.push(`... ${marker.directive} { ${innerParts.join(' ')} }`);
+        }
         allVars.push(...marker.extraVars);
+    }
+
+    // Collect definitions from child nodes
+    for (const node of Object.values(fields)) {
+        if (node.definitions) allDefs.push(...node.definitions);
     }
 
     return {
         _type: null as any, _vars: null as any,
         fragment: `{ ${parts.join(' ')} }`,
         vars: allVars,
+        definitions: allDefs.length ? allDefs : undefined,
         parse(data) {
             if (data == null) throw new ParseError('Expected object, got null');
             if (typeof data !== 'object') throw new ParseError('Expected object');
@@ -438,15 +454,18 @@ function union<B extends UnionBranches>(branches: B): GQLNode<InferUnion<B>, Uni
     const parts: string[] = ['__typename'];
     const allVars: GQLVariable[] = [];
 
+    const allDefs: string[] = [];
     for (const [typeName, node] of Object.entries(branches)) {
         parts.push(`... on ${typeName} ${node.fragment}`);
         allVars.push(...node.vars);
+        if (node.definitions) allDefs.push(...node.definitions);
     }
 
     return {
         _type: null as any, _vars: null as any,
         fragment: `{ ${parts.join(' ')} }`,
         vars: allVars,
+        definitions: allDefs.length ? allDefs : undefined,
         parse(data) {
             if (data == null) throw new ParseError('Expected union object, got null');
             if (typeof data !== 'object') throw new ParseError('Expected union object');
@@ -491,9 +510,14 @@ function operation<F extends SelectionFields>(
         ? `(${vars.map(vr => `$${vr.varName}: ${vr.graphqlType}`).join(', ')})`
         : '';
 
+    // Deduplicate named fragment definitions
+    const defs = root.definitions?.length
+        ? '\n' + [...new Set(root.definitions)].join('\n')
+        : '';
+
     return {
         _type: null as any, _vars: null as any,
-        query: `${kind} ${name}${varDecl} ${root.fragment}`,
+        query: `${kind} ${name}${varDecl} ${root.fragment}${defs}`,
         parse: root.parse,
     };
 }
@@ -529,6 +553,16 @@ async function execute<T, TVars extends Record<string, any>>(
     if (typeof json !== 'object' || json === null || !('data' in json))
         throw new ParseError('Expected { data: ... } envelope');
     return op.parse(json.data);
+}
+
+function fragment<F extends SelectionFields>(nameOnType: string, fields: F): F {
+    const name = nameOnType.split(' ')[0]!;
+    const marker: FragmentMarker = { directive: nameOnType, optional: false, extraVars: [], name };
+    const result: SelectionFields = {};
+    for (const [key, node] of Object.entries(fields)) {
+        result[key] = { ...node, meta: { ...node.meta, fragment: marker } };
+    }
+    return result as F;
 }
 
 export { t, v, raw, field, alias, directive, skip, include, select, fragment, defer, stream, union, nullable, lazy, list, query, mutation, subscription, execute };

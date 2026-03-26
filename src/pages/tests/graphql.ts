@@ -1125,7 +1125,7 @@ export const graphqlSuite: TestSuite = {
         },
 
         // ============================================================
-        // Inline fragments — fragment() and defer()
+        // Inline fragments — directive() group and defer()
         // ============================================================
 
         {
@@ -1140,11 +1140,11 @@ export const graphqlSuite: TestSuite = {
             },
         },
         {
-            name: '...fragment() with custom directive',
+            name: '...directive() group with custom directive',
             run() {
                 const node = select({
                     name: t.string(),
-                    ...fragment('@cacheControl(maxAge: 60)', { bio: t.string() }),
+                    ...directive('@cacheControl(maxAge: 60)', { bio: t.string() }),
                 });
                 assert(node.fragment.includes('... @cacheControl(maxAge: 60) { bio }'));
             },
@@ -1173,11 +1173,11 @@ export const graphqlSuite: TestSuite = {
             },
         },
         {
-            name: 'fragment() fields are NOT auto-optional',
+            name: 'directive() group fields are NOT auto-optional',
             run() {
                 const node = select({
                     name: t.string(),
-                    ...fragment('@custom', { bio: t.string() }),
+                    ...directive('@custom', { bio: t.string() }),
                 });
                 assertThrows(() => node.parse({ name: 'Alice', bio: undefined }));
             },
@@ -1357,6 +1357,71 @@ export const graphqlSuite: TestSuite = {
                 const result = node.parse({ friends: [{ name: 'Alice' }, { name: 'Bob' }] });
                 assertEqual(result.friends.length, 2);
                 assertEqual(result.friends[0]!.name, 'Alice');
+            },
+        },
+
+        // ============================================================
+        // Named fragments
+        // ============================================================
+
+        {
+            name: 'fragment() generates ...Name reference and definition',
+            run() {
+                const userFields = fragment("UserFields on User", { id: t.id(), name: t.string() });
+                const q = query('Q', {
+                    user: select({ ...userFields }),
+                });
+                assert(q.query.includes('...UserFields'));
+                assert(q.query.includes('fragment UserFields on User { id name }'));
+            },
+        },
+        {
+            name: 'fragment() reused across selects — definition appears once',
+            run() {
+                const userFields = fragment("UserFields on User", { id: t.id(), name: t.string() });
+                const q = query('Q', {
+                    user: select({ ...userFields }),
+                    admin: select({ ...userFields }),
+                });
+                const defs = q.query.split('fragment UserFields on User').length - 1;
+                assertEqual(defs, 1);
+                assert(q.query.includes('user { ...UserFields }'));
+                assert(q.query.includes('admin { ...UserFields }'));
+            },
+        },
+        {
+            name: 'fragment() variables collected at operation level',
+            run() {
+                const frag = fragment("F on User", {
+                    posts: field({ limit: v.int('n') }, list(select({ id: t.id() }))),
+                });
+                const q = query('Q', { user: select({ ...frag }) });
+                assert(q.query.includes('$n: Int!'));
+            },
+        },
+        {
+            name: 'fragment() fields parse correctly',
+            run() {
+                const userFields = fragment("UserFields on User", { id: t.id(), name: t.string() });
+                const node = select({ ...userFields, email: t.string() });
+                const result = node.parse({ id: '1', name: 'Alice', email: 'a@b.com' });
+                assertEqual(result.id, '1');
+                assertEqual(result.name, 'Alice');
+                assertEqual(result.email, 'a@b.com');
+            },
+        },
+        {
+            name: 'fragment() with nested select',
+            run() {
+                const frag = fragment("Addr on Address", {
+                    city: t.string(),
+                    country: t.string(),
+                });
+                const q = query('Q', {
+                    user: select({ address: select({ ...frag }) }),
+                });
+                assert(q.query.includes('address { ...Addr }'));
+                assert(q.query.includes('fragment Addr on Address { city country }'));
             },
         },
     ],
