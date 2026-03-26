@@ -1,7 +1,7 @@
 import { type TestSuite, assert, assertEqual, assertThrows } from './runner';
 import {
     t, v, raw, field, alias, directive, skip, include,
-    select, union, nullable, lazy, list,
+    select, fragment, defer, union, nullable, lazy, list,
     query, mutation, subscription,
     ParseError, GraphQLError,
 } from '../../graphql';
@@ -1121,6 +1121,120 @@ export const graphqlSuite: TestSuite = {
                 u.parse(data);
                 const branchResult = branch.parse(data);
                 assert(!('__typename' in branchResult));
+            },
+        },
+
+        // ============================================================
+        // Inline fragments — fragment() and defer()
+        // ============================================================
+
+        {
+            name: '...defer() generates ... @defer { fields }',
+            run() {
+                const node = select({
+                    name: t.string(),
+                    ...defer({ bio: t.string(), avatar: t.string() }),
+                });
+                assert(node.fragment.includes('... @defer { bio avatar }'));
+                assert(node.fragment.includes('name'));
+            },
+        },
+        {
+            name: '...fragment() with custom directive',
+            run() {
+                const node = select({
+                    name: t.string(),
+                    ...fragment('@cacheControl(maxAge: 60)', { bio: t.string() }),
+                });
+                assert(node.fragment.includes('... @cacheControl(maxAge: 60) { bio }'));
+            },
+        },
+        {
+            name: 'deferred fields parse as undefined when absent',
+            run() {
+                const node = select({
+                    name: t.string(),
+                    ...defer({ bio: t.string() }),
+                });
+                const result = node.parse({ name: 'Alice', bio: undefined });
+                assertEqual(result.name, 'Alice');
+                assertEqual(result.bio, undefined);
+            },
+        },
+        {
+            name: 'deferred fields parse normally when present',
+            run() {
+                const node = select({
+                    name: t.string(),
+                    ...defer({ bio: t.string() }),
+                });
+                const result = node.parse({ name: 'Alice', bio: 'Hello' });
+                assertEqual(result.bio, 'Hello');
+            },
+        },
+        {
+            name: 'fragment() fields are NOT auto-optional',
+            run() {
+                const node = select({
+                    name: t.string(),
+                    ...fragment('@custom', { bio: t.string() }),
+                });
+                assertThrows(() => node.parse({ name: 'Alice', bio: undefined }));
+            },
+        },
+        {
+            name: 'defer() with label opt',
+            run() {
+                const node = select({
+                    name: t.string(),
+                    ...defer({ label: 'heavy' }, { bio: t.string() }),
+                });
+                assert(node.fragment.includes('... @defer(label: "heavy") { bio }'));
+            },
+        },
+        {
+            name: 'defer() with if variable',
+            run() {
+                const q = query('Q', {
+                    user: select({
+                        name: t.string(),
+                        ...defer({ if: v.boolean('slow') }, { bio: t.string() }),
+                    }),
+                });
+                assert(q.query.includes('@defer(if: $slow)'));
+                assert(q.query.includes('$slow: Boolean!'));
+            },
+        },
+        {
+            name: 'defer() with label and if',
+            run() {
+                const node = select({
+                    ...defer({ label: 'x', if: v.boolean('d') }, { bio: t.string() }),
+                });
+                assert(node.fragment.includes('@defer(label: "x", if: $d)'));
+            },
+        },
+        {
+            name: 'multiple ...defer() spreads produce separate fragments',
+            run() {
+                const node = select({
+                    name: t.string(),
+                    ...defer({ bio: t.string() }),
+                    ...defer({ label: 'extra' }, { stats: t.int() }),
+                });
+                assert(node.fragment.includes('... @defer { bio }'));
+                assert(node.fragment.includes('... @defer(label: "extra") { stats }'));
+            },
+        },
+        {
+            name: 'variables inside inline fragments are collected',
+            run() {
+                const q = query('Q', {
+                    ...defer({
+                        users: field({ limit: v.int('n') }, list(select({ id: t.id() }))),
+                    }),
+                });
+                assert(q.query.includes('$n: Int!'));
             },
         },
     ],

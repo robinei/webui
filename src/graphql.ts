@@ -1,5 +1,6 @@
 // TODO:
-// - @defer (incremental delivery — transport concern, needs execute()/query.ts work)
+// - @defer streaming transport: query building supported via defer(), but execute()/query.ts
+//   need incremental delivery support (chunked responses, partial cache hydration)
 // - Input type combinators: Zod-like schema for GraphQL input types (validates outgoing data,
 //   carries structural info for schema validation tests via introspection)
 // - t.id() coercion: some APIs return numeric IDs; consider t.id() accepting both string and
@@ -21,10 +22,17 @@
 
 // --- Core types ---
 
+type FragmentMarker = {
+    readonly directive: string;
+    readonly optional: boolean;
+    readonly extraVars: GQLVariable[];
+};
+
 type FieldMeta = {
     readonly args?: Record<string, ArgValue>;
     readonly fieldName?: string;
     readonly directive?: string;
+    readonly fragment?: FragmentMarker;
 };
 
 type GQLNode<T, V extends GQLVariable<any, any> = never> = {
@@ -263,26 +271,45 @@ type SelectionVars<F extends SelectionFields> = {
     [K in keyof F]: F[K] extends GQLNode<any, infer V> ? V : never;
 }[keyof F];
 
+function emitField(key: string, node: GQLNode<any, any>): string {
+    const meta = node.meta;
+    let argsStr = '';
+    if (meta?.args) {
+        const entries = Object.entries(meta.args);
+        if (entries.length > 0) {
+            argsStr = '(' + entries.map(([name, val]: [string, ArgValue]) =>
+                '__raw' in val ? `${name}: ${val.__raw}` : `${name}: $${val.varName}`
+            ).join(', ') + ')';
+        }
+    }
+    const gqlName = meta?.fieldName ?? key;
+    const prefix = gqlName !== key ? `${key}: ${gqlName}` : key;
+    const dir = meta?.directive ? ` ${meta.directive}` : '';
+    return node.fragment ? `${prefix}${argsStr}${dir} ${node.fragment}` : `${prefix}${argsStr}${dir}`;
+}
+
 function select<F extends SelectionFields>(fields: F): GQLNode<InferSelection<F>, SelectionVars<F>> {
     const parts: string[] = [];
     const allVars: GQLVariable[] = [];
+    const fragmentGroups = new Map<FragmentMarker, [string, GQLNode<any, any>][]>();
 
     for (const [key, node] of Object.entries(fields)) {
-        const meta = node.meta;
-        let argsStr = '';
-        if (meta?.args) {
-            const entries = Object.entries(meta.args);
-            if (entries.length > 0) {
-                argsStr = '(' + entries.map(([name, val]: [string, ArgValue]) =>
-                    '__raw' in val ? `${name}: ${val.__raw}` : `${name}: $${val.varName}`
-                ).join(', ') + ')';
-            }
+        const marker = node.meta?.fragment;
+        if (marker) {
+            let group = fragmentGroups.get(marker);
+            if (!group) { group = []; fragmentGroups.set(marker, group); }
+            group.push([key, node]);
+        } else {
+            parts.push(emitField(key, node));
         }
         allVars.push(...node.vars);
-        const gqlName = meta?.fieldName ?? key;
-        const prefix = gqlName !== key ? `${key}: ${gqlName}` : key;
-        const dir = meta?.directive ? ` ${meta.directive}` : '';
-        parts.push(node.fragment ? `${prefix}${argsStr}${dir} ${node.fragment}` : `${prefix}${argsStr}${dir}`);
+    }
+
+    // Emit inline fragment groups
+    for (const [marker, group] of fragmentGroups) {
+        const innerParts = group.map(([key, node]) => emitField(key, node));
+        parts.push(`... ${marker.directive} { ${innerParts.join(' ')} }`);
+        allVars.push(...marker.extraVars);
     }
 
     return {
@@ -294,12 +321,53 @@ function select<F extends SelectionFields>(fields: F): GQLNode<InferSelection<F>
             if (typeof data !== 'object') throw new ParseError('Expected object');
             const result: Record<string, any> = {};
             for (const [key, node] of Object.entries(fields)) {
-                try { result[key] = node.parse((data as any)[key]); }
-                catch (e) { throw new ParseError(`${key}: ${(e as ParseError).message}`); }
+                const optional = node.meta?.fragment?.optional;
+                if (optional && (data as any)[key] === undefined) {
+                    result[key] = undefined;
+                } else {
+                    try { result[key] = node.parse((data as any)[key]); }
+                    catch (e) { throw new ParseError(`${key}: ${(e as ParseError).message}`); }
+                }
             }
             return result as any;
         },
     };
+}
+
+// --- Inline fragments ---
+
+type DeferFields<F extends SelectionFields> = {
+    [K in keyof F]: F[K] extends GQLNode<infer T, infer V> ? GQLNode<T | undefined, V> : F[K];
+};
+
+type DeferOpts = { label?: string; if?: GQLVariable<string, boolean> };
+
+function fragment<F extends SelectionFields>(dir: string, fields: F): F {
+    const marker: FragmentMarker = { directive: dir, optional: false, extraVars: [] };
+    const result: any = {};
+    for (const [key, node] of Object.entries(fields)) {
+        result[key] = { ...node, meta: { ...node.meta, fragment: marker } };
+    }
+    return result;
+}
+
+function defer<F extends SelectionFields>(fields: F): DeferFields<F>;
+function defer<F extends SelectionFields>(opts: DeferOpts, fields: F): DeferFields<F>;
+function defer(fieldsOrOpts: any, maybeFields?: any): any {
+    const hasOpts = maybeFields !== undefined;
+    const opts: DeferOpts = hasOpts ? fieldsOrOpts : {};
+    const fields: SelectionFields = hasOpts ? maybeFields : fieldsOrOpts;
+    const args: string[] = [];
+    if (opts.label) args.push(`label: "${opts.label}"`);
+    if (opts.if) args.push(`if: $${opts.if.varName}`);
+    const dir = args.length ? `@defer(${args.join(', ')})` : '@defer';
+    const extraVars = opts.if ? [opts.if] : [];
+    const marker: FragmentMarker = { directive: dir, optional: true, extraVars };
+    const result: any = {};
+    for (const [key, node] of Object.entries(fields)) {
+        result[key] = { ...node, meta: { ...node.meta, fragment: marker } };
+    }
+    return result;
 }
 
 // --- Union / interface types ---
@@ -413,6 +481,6 @@ async function execute<T, TVars extends Record<string, any>>(
     return op.parse(json.data);
 }
 
-export { t, v, raw, field, alias, directive, skip, include, select, union, nullable, lazy, list, query, mutation, subscription, execute };
+export { t, v, raw, field, alias, directive, skip, include, select, fragment, defer, union, nullable, lazy, list, query, mutation, subscription, execute };
 export { ParseError, GraphQLError };
 export type { GQLNode, GQLVariable, GQLOperation, Infer, OperationResult, OperationVariables };
