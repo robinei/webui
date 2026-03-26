@@ -27,6 +27,89 @@ No special transport needed — the browser parses HTML incrementally. This is t
 - **Suspense**: Already handles async resolution — just needs the query system to properly signal completion when streamed data arrives.
 
 
+## Normalized Caching + Optimistic Updates
+
+Currently each query/family owns its own data independently. If two queries return the same User #5, updating one doesn't affect the other — you must manually `invalidate()` or `refetch()` stale queries.
+
+### Architecture: Index-Based Invalidation
+
+**Why not full normalization (Relay-style)?** Full normalization decomposes responses into flat entity signals and recomposes via Computeds. This conflicts with the framework's mutable-object + thunk model — query results would become immutable computed views. Index-based invalidation keeps `QueryCacheEntry` and plain mutable results untouched, and refetches instead of patching.
+
+**EntityIndex** — a module-level registry mapping `(type, id) → Set<QueryCacheEntry>`, tracking which entities appear in which cache entries.
+
+```
+User#5 → [GetUser("5").entry, GetUsers.entry, SearchResults.entry]
+Post#12 → [GetUser("5").entry, GetPosts.entry]
+```
+
+When an entity is updated (via mutation response or manual call), all entries referencing it are invalidated and refetched.
+
+### Changes to `src/query.ts`
+
+**EntityIndex** (module-level):
+- `indexEntities(entry, refs)` — re-indexes an entry after fetch (removes old refs, adds new)
+- `deindexEntry(entry)` — removes entry from all entity sets (on GC)
+- `invalidateEntity(type, id)` — marks all entries containing this entity as stale
+- `refetchEntity(type, id)` — invalidate + immediately refetch mounted entries
+
+**Wire into existing code**:
+- After successful `doFetch`: if query has an entity extractor, call `indexEntities`
+- On `resetEntry` / GC: call `deindexEntry`
+- New `entities` option on `QueryOptions`: `entities?: (data: T) => EntityRef[]`
+
+**`mutate()` function** — optimistic updates with rollback:
+
+```typescript
+mutate({
+    fetch: () => execute('/graphql', UpdateUser, { id, name }),
+    optimistic: [
+        { query: getUserFamily, key: id, patch: prev => ({ ...prev, user: { ...prev.user, name } }) },
+    ],
+    invalidate: [{ type: 'User', id }],
+    // On success: all queries containing User #id refetch
+    // On failure: optimistic patches rolled back
+});
+```
+
+Optimistic patches target specific query entries directly (whole-result patching — the consumer knows their own data shape). Entity invalidation handles cross-query consistency after the mutation succeeds.
+
+### Changes to `src/graphql.ts`
+
+Make the selection tree walkable at runtime so entity extractors can be auto-generated from query definitions.
+
+**Add runtime metadata to `GQLNode`**:
+- `scalarKind?: 'id' | 'string' | 'int' | 'float' | 'boolean'` — set by `makeScalar`, tags what kind of scalar this is
+- `children?: Record<string, GQLNode>` — set by `select()` and `union()`, exposes the field/branch map
+- `inner?: GQLNode` — set by `list()`, `nullable()`, `field()`, `alias()`, `lazy()`, links to the wrapped node
+
+Every combinator sets its own link:
+- `select()`, `union()` → `children` (field/branch name → node)
+- `list()`, `nullable()`, `field()`, `alias()` → `inner` (wrapped node)
+- `lazy()` → getter on `inner` that resolves the thunk
+- Scalars → leaf nodes, just `scalarKind`
+
+**`entitiesFrom(op)`** — auto-generate an entity extractor by walking the selection tree:
+- Find all `select()` nodes whose children include a field with `scalarKind === 'id'`
+- Return a function that walks response data and collects `{ type, id }` for every matching object
+- Type name derived from parent field name (capitalized): `user` → `"User"`, `posts` → `"Posts"`
+
+```typescript
+// Auto-generated:
+const getUser = createQueryFamily('getUser', fetcher, { entities: entitiesFrom(GetUser) });
+
+// Manual (always an option, no graphql.ts dependency):
+const getUser = createQueryFamily('getUser', fetcher, {
+    entities: (result) => [{ type: 'User', id: result.user.id }],
+});
+```
+
+### Design decisions
+- **No response decomposition/recomposition** — results stay as plain objects
+- **No automatic patching from mutation responses** — uses invalidation + refetch instead (simpler, entity index infrastructure supports patching later if needed)
+- **No GraphQL coupling in query.ts** — entity extractors are plain functions
+- `entitiesFrom()` derives entity structure from the selection tree, not from the server schema
+
+
 ## Tree Shaking Markers
 
 Add `/* @__PURE__ */` annotations to side-effect-free function calls and class instantiations so bundlers (esbuild, Rollup, Terser) can eliminate unused framework features.

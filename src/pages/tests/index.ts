@@ -11,6 +11,7 @@ import { routingSuite } from './routing';
 import { observableSuite } from './observable';
 import { virtualListSuite } from './virtuallist';
 import { exitAnimationSuite } from './exit-animation';
+import { graphqlSuite } from './graphql';
 
 const { div, span, button, h2, h3, pre } = HTML;
 
@@ -165,6 +166,7 @@ const allSuites: TestSuite[] = [
     observableSuite,
     virtualListSuite,
     exitAnimationSuite,
+    graphqlSuite,
 ];
 
 export function TestsPage(): FragmentItem {

@@ -1,3 +1,7 @@
+// TODO:
+// - Pagination primitives (cursor-based connection spec, fetchMore/append)
+// - Optimistic updates with automatic rollback on mutation failure
+
 import { Component, onQueryBind, type Value } from './core';
 import { Signal, Computed, Observable, observableProxy, type ObservableProxy } from './observable';
 

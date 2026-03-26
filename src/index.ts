@@ -46,6 +46,19 @@ export const newsObsPostRoute = newsObsRoute.subRoute('/id:number',
     { importPath: './pages/news-obs' }
 );
 
+export const rickRoute = router.subRoute('/rick',
+    async () => (await import('./pages/rick')).RickPage(),
+    { importPath: './pages/rick' }
+);
+export const rickListRoute = rickRoute.subRoute('/',
+    async () => (await import('./pages/rick')).RickListPage(),
+    { importPath: './pages/rick' }
+);
+export const rickCharacterRoute = rickRoute.subRoute('/id:string',
+    async ({ id }) => (await import('./pages/rick')).RickCharacterPage({ id }),
+    { importPath: './pages/rick' }
+);
+
 export const testsRoute = router.subRoute('/tests',
     async () => (await import('./pages/tests')).TestsPage(),
     { transient: true, importPath: './pages/tests' }
@@ -71,6 +84,7 @@ function RootPage(): FragmentItem {
             virtualRoute.Link({}, 'Virtual List'),
             newsRoute.Link({}, 'News'),
             newsObsRoute.Link({}, 'News (Obs)'),
+            rickRoute.Link({}, 'Rick & Morty'),
             testsRoute.Link({}, 'Tests'),
             button('Print tree', {
                 onclick() {
