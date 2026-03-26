@@ -1,6 +1,6 @@
 // TODO:
-// - @defer streaming transport: query building supported via defer(), but execute()/query.ts
-//   need incremental delivery support (chunked responses, partial cache hydration)
+// - @defer/@stream streaming transport: query building supported via defer()/stream(), but
+//   execute()/query.ts need incremental delivery support (chunked responses, partial cache hydration)
 // - Input type combinators: Zod-like schema for GraphQL input types (validates outgoing data,
 //   carries structural info for schema validation tests via introspection)
 // - t.id() coercion: some APIs return numeric IDs; consider t.id() accepting both string and
@@ -220,6 +220,15 @@ function alias<T, V extends GQLVariable<any, any>>(fieldName: string, node: GQLN
 
 // --- Directives ---
 
+type SelectionFields = Record<string, GQLNode<any, any>>;
+
+type DeferFields<F extends SelectionFields> = {
+    [K in keyof F]: F[K] extends GQLNode<infer T, infer V> ? GQLNode<T | undefined, V> : F[K];
+};
+
+type DeferOpts = { label?: string; if?: GQLVariable<string, boolean> };
+type StreamOpts = { initialCount?: number; label?: string; if?: GQLVariable<string, boolean> };
+
 function directive<T, V extends GQLVariable<any, any>>(dir: string, node: GQLNode<T, V>): GQLNode<T, V> {
     return {
         _type: null as any, _vars: null as any,
@@ -232,36 +241,113 @@ function directive<T, V extends GQLVariable<any, any>>(dir: string, node: GQLNod
 function skip<T, V extends GQLVariable<any, any>, N extends string>(
     variable: GQLVariable<N, boolean>,
     node: GQLNode<T, V>,
-): GQLNode<T | undefined, V | GQLVariable<N, boolean>> {
-    return {
-        _type: null as any, _vars: null as any,
-        fragment: node.fragment, vars: [...node.vars, variable],
-        meta: { ...node.meta, directive: `@skip(if: $${variable.varName})${node.meta?.directive ? ' ' + node.meta.directive : ''}` },
-        parse(data) {
-            if (data === undefined) return undefined;
-            return node.parse(data);
-        },
-    };
+): GQLNode<T | undefined, V | GQLVariable<N, boolean>>;
+function skip<F extends SelectionFields, N extends string>(
+    variable: GQLVariable<N, boolean>,
+    fields: F,
+): DeferFields<F>;
+function skip(variable: GQLVariable<string, boolean>, nodeOrFields: any): any {
+    if ('parse' in nodeOrFields) {
+        // Single field
+        return {
+            _type: null as any, _vars: null as any,
+            fragment: nodeOrFields.fragment, vars: [...nodeOrFields.vars, variable],
+            meta: { ...nodeOrFields.meta, directive: `@skip(if: $${variable.varName})${nodeOrFields.meta?.directive ? ' ' + nodeOrFields.meta.directive : ''}` },
+            parse(data: unknown) {
+                if (data === undefined) return undefined;
+                return nodeOrFields.parse(data);
+            },
+        };
+    }
+    // Group spread
+    const marker: FragmentMarker = { directive: `@skip(if: $${variable.varName})`, optional: true, extraVars: [variable] };
+    const result: any = {};
+    for (const [key, node] of Object.entries(nodeOrFields)) {
+        result[key] = { ...(node as any), meta: { ...(node as any).meta, fragment: marker } };
+    }
+    return result;
 }
 
 function include<T, V extends GQLVariable<any, any>, N extends string>(
     variable: GQLVariable<N, boolean>,
     node: GQLNode<T, V>,
-): GQLNode<T | undefined, V | GQLVariable<N, boolean>> {
+): GQLNode<T | undefined, V | GQLVariable<N, boolean>>;
+function include<F extends SelectionFields, N extends string>(
+    variable: GQLVariable<N, boolean>,
+    fields: F,
+): DeferFields<F>;
+function include(variable: GQLVariable<string, boolean>, nodeOrFields: any): any {
+    if ('parse' in nodeOrFields) {
+        // Single field
+        return {
+            _type: null as any, _vars: null as any,
+            fragment: nodeOrFields.fragment, vars: [...nodeOrFields.vars, variable],
+            meta: { ...nodeOrFields.meta, directive: `@include(if: $${variable.varName})${nodeOrFields.meta?.directive ? ' ' + nodeOrFields.meta.directive : ''}` },
+            parse(data: unknown) {
+                if (data === undefined) return undefined;
+                return nodeOrFields.parse(data);
+            },
+        };
+    }
+    // Group spread
+    const marker: FragmentMarker = { directive: `@include(if: $${variable.varName})`, optional: true, extraVars: [variable] };
+    const result: any = {};
+    for (const [key, node] of Object.entries(nodeOrFields)) {
+        result[key] = { ...(node as any), meta: { ...(node as any).meta, fragment: marker } };
+    }
+    return result;
+}
+
+function fragment<F extends SelectionFields>(dir: string, fields: F): F {
+    const marker: FragmentMarker = { directive: dir, optional: false, extraVars: [] };
+    const result: any = {};
+    for (const [key, node] of Object.entries(fields)) {
+        result[key] = { ...node, meta: { ...node.meta, fragment: marker } };
+    }
+    return result;
+}
+
+function defer<F extends SelectionFields>(fields: F): DeferFields<F>;
+function defer<F extends SelectionFields>(opts: DeferOpts, fields: F): DeferFields<F>;
+function defer(fieldsOrOpts: any, maybeFields?: any): any {
+    const hasOpts = maybeFields !== undefined;
+    const opts: DeferOpts = hasOpts ? fieldsOrOpts : {};
+    const fields: SelectionFields = hasOpts ? maybeFields : fieldsOrOpts;
+    const args: string[] = [];
+    if (opts.label) args.push(`label: "${opts.label}"`);
+    if (opts.if) args.push(`if: $${opts.if.varName}`);
+    const dir = args.length ? `@defer(${args.join(', ')})` : '@defer';
+    const extraVars = opts.if ? [opts.if] : [];
+    const marker: FragmentMarker = { directive: dir, optional: true, extraVars };
+    const result: any = {};
+    for (const [key, node] of Object.entries(fields)) {
+        result[key] = { ...node, meta: { ...node.meta, fragment: marker } };
+    }
+    return result;
+}
+
+function stream<T, V extends GQLVariable<any, any>>(node: GQLNode<T[], V>): GQLNode<T[], V>;
+function stream<T, V extends GQLVariable<any, any>>(opts: StreamOpts, node: GQLNode<T[], V>): GQLNode<T[], V>;
+function stream(nodeOrOpts: any, maybeNode?: any): any {
+    const hasOpts = maybeNode !== undefined;
+    const opts: StreamOpts = hasOpts ? nodeOrOpts : {};
+    const node = hasOpts ? maybeNode : nodeOrOpts;
+    const args: string[] = [];
+    if (opts.initialCount != null) args.push(`initialCount: ${opts.initialCount}`);
+    if (opts.label) args.push(`label: "${opts.label}"`);
+    if (opts.if) args.push(`if: $${opts.if.varName}`);
+    const dir = args.length ? `@stream(${args.join(', ')})` : '@stream';
+    const extraVars = opts.if ? [opts.if] : [];
     return {
         _type: null as any, _vars: null as any,
-        fragment: node.fragment, vars: [...node.vars, variable],
-        meta: { ...node.meta, directive: `@include(if: $${variable.varName})${node.meta?.directive ? ' ' + node.meta.directive : ''}` },
-        parse(data) {
-            if (data === undefined) return undefined;
-            return node.parse(data);
-        },
+        fragment: node.fragment,
+        vars: [...node.vars, ...extraVars],
+        meta: { ...node.meta, directive: node.meta?.directive ? `${dir} ${node.meta.directive}` : dir },
+        parse: node.parse,
     };
 }
 
 // --- Object selection ---
-
-type SelectionFields = Record<string, GQLNode<any, any>>;
 
 type InferSelection<F extends SelectionFields> = {
     [K in keyof F]: F[K] extends GQLNode<infer T, any> ? T : never;
@@ -332,42 +418,6 @@ function select<F extends SelectionFields>(fields: F): GQLNode<InferSelection<F>
             return result as any;
         },
     };
-}
-
-// --- Inline fragments ---
-
-type DeferFields<F extends SelectionFields> = {
-    [K in keyof F]: F[K] extends GQLNode<infer T, infer V> ? GQLNode<T | undefined, V> : F[K];
-};
-
-type DeferOpts = { label?: string; if?: GQLVariable<string, boolean> };
-
-function fragment<F extends SelectionFields>(dir: string, fields: F): F {
-    const marker: FragmentMarker = { directive: dir, optional: false, extraVars: [] };
-    const result: any = {};
-    for (const [key, node] of Object.entries(fields)) {
-        result[key] = { ...node, meta: { ...node.meta, fragment: marker } };
-    }
-    return result;
-}
-
-function defer<F extends SelectionFields>(fields: F): DeferFields<F>;
-function defer<F extends SelectionFields>(opts: DeferOpts, fields: F): DeferFields<F>;
-function defer(fieldsOrOpts: any, maybeFields?: any): any {
-    const hasOpts = maybeFields !== undefined;
-    const opts: DeferOpts = hasOpts ? fieldsOrOpts : {};
-    const fields: SelectionFields = hasOpts ? maybeFields : fieldsOrOpts;
-    const args: string[] = [];
-    if (opts.label) args.push(`label: "${opts.label}"`);
-    if (opts.if) args.push(`if: $${opts.if.varName}`);
-    const dir = args.length ? `@defer(${args.join(', ')})` : '@defer';
-    const extraVars = opts.if ? [opts.if] : [];
-    const marker: FragmentMarker = { directive: dir, optional: true, extraVars };
-    const result: any = {};
-    for (const [key, node] of Object.entries(fields)) {
-        result[key] = { ...node, meta: { ...node.meta, fragment: marker } };
-    }
-    return result;
 }
 
 // --- Union / interface types ---
@@ -481,6 +531,6 @@ async function execute<T, TVars extends Record<string, any>>(
     return op.parse(json.data);
 }
 
-export { t, v, raw, field, alias, directive, skip, include, select, fragment, defer, union, nullable, lazy, list, query, mutation, subscription, execute };
+export { t, v, raw, field, alias, directive, skip, include, select, fragment, defer, stream, union, nullable, lazy, list, query, mutation, subscription, execute };
 export { ParseError, GraphQLError };
 export type { GQLNode, GQLVariable, GQLOperation, Infer, OperationResult, OperationVariables };

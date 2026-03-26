@@ -1,7 +1,7 @@
 import { type TestSuite, assert, assertEqual, assertThrows } from './runner';
 import {
     t, v, raw, field, alias, directive, skip, include,
-    select, fragment, defer, union, nullable, lazy, list,
+    select, fragment, defer, stream, union, nullable, lazy, list,
     query, mutation, subscription,
     ParseError, GraphQLError,
 } from '../../graphql';
@@ -1235,6 +1235,128 @@ export const graphqlSuite: TestSuite = {
                     }),
                 });
                 assert(q.query.includes('$n: Int!'));
+            },
+        },
+
+        // ============================================================
+        // Group skip/include
+        // ============================================================
+
+        {
+            name: '...skip() group generates ... @skip(if: $var) { fields }',
+            run() {
+                const $hide = v.boolean('hide');
+                const node = select({
+                    name: t.string(),
+                    ...skip($hide, { bio: t.string(), avatar: t.string() }),
+                });
+                assert(node.fragment.includes('... @skip(if: $hide) { bio avatar }'));
+                assert(node.fragment.includes('name'));
+            },
+        },
+        {
+            name: '...skip() group fields parse as undefined when absent',
+            run() {
+                const $hide = v.boolean('hide');
+                const node = select({
+                    name: t.string(),
+                    ...skip($hide, { bio: t.string() }),
+                });
+                const result = node.parse({ name: 'Alice', bio: undefined });
+                assertEqual(result.name, 'Alice');
+                assertEqual(result.bio, undefined);
+            },
+        },
+        {
+            name: '...skip() group fields parse normally when present',
+            run() {
+                const $hide = v.boolean('hide');
+                const node = select({
+                    name: t.string(),
+                    ...skip($hide, { bio: t.string() }),
+                });
+                const result = node.parse({ name: 'Alice', bio: 'Hello' });
+                assertEqual(result.bio, 'Hello');
+            },
+        },
+        {
+            name: '...skip() group variable collected at operation level',
+            run() {
+                const $hide = v.boolean('hide');
+                const q = query('Q', {
+                    ...skip($hide, { bio: t.string() }),
+                });
+                assert(q.query.includes('$hide: Boolean!'));
+            },
+        },
+        {
+            name: '...include() group generates ... @include(if: $var) { fields }',
+            run() {
+                const $show = v.boolean('show');
+                const node = select({
+                    name: t.string(),
+                    ...include($show, { bio: t.string(), avatar: t.string() }),
+                });
+                assert(node.fragment.includes('... @include(if: $show) { bio avatar }'));
+            },
+        },
+        {
+            name: '...include() group fields parse as undefined when absent',
+            run() {
+                const $show = v.boolean('show');
+                const node = select({
+                    name: t.string(),
+                    ...include($show, { bio: t.string() }),
+                });
+                const result = node.parse({ name: 'Alice', bio: undefined });
+                assertEqual(result.bio, undefined);
+            },
+        },
+
+        // ============================================================
+        // stream()
+        // ============================================================
+
+        {
+            name: 'stream() adds @stream directive to list field',
+            run() {
+                const node = select({
+                    friends: stream(list(select({ id: t.id(), name: t.string() }))),
+                });
+                assert(node.fragment.includes('friends @stream'));
+            },
+        },
+        {
+            name: 'stream() with initialCount',
+            run() {
+                const node = select({
+                    friends: stream({ initialCount: 3 }, list(select({ id: t.id() }))),
+                });
+                assert(node.fragment.includes('friends @stream(initialCount: 3)'));
+            },
+        },
+        {
+            name: 'stream() with all opts',
+            run() {
+                const q = query('Q', {
+                    friends: stream(
+                        { initialCount: 2, label: 'f', if: v.boolean('s') },
+                        list(select({ id: t.id() })),
+                    ),
+                });
+                assert(q.query.includes('@stream(initialCount: 2, label: "f", if: $s)'));
+                assert(q.query.includes('$s: Boolean!'));
+            },
+        },
+        {
+            name: 'stream() parses list normally',
+            run() {
+                const node = select({
+                    friends: stream(list(select({ name: t.string() }))),
+                });
+                const result = node.parse({ friends: [{ name: 'Alice' }, { name: 'Bob' }] });
+                assertEqual(result.friends.length, 2);
+                assertEqual(result.friends[0]!.name, 'Alice');
             },
         },
     ],
