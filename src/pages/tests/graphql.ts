@@ -1367,7 +1367,7 @@ export const graphqlSuite: TestSuite = {
         {
             name: 'fragment() generates ...Name reference and definition',
             run() {
-                const userFields = fragment("UserFields on User", { id: t.id(), name: t.string() });
+                const userFields = fragment("UserFields", "User", { id: t.id(), name: t.string() });
                 const q = query('Q', {
                     user: select({ ...userFields }),
                 });
@@ -1378,7 +1378,7 @@ export const graphqlSuite: TestSuite = {
         {
             name: 'fragment() reused across selects — definition appears once',
             run() {
-                const userFields = fragment("UserFields on User", { id: t.id(), name: t.string() });
+                const userFields = fragment("UserFields", "User", { id: t.id(), name: t.string() });
                 const q = query('Q', {
                     user: select({ ...userFields }),
                     admin: select({ ...userFields }),
@@ -1392,7 +1392,7 @@ export const graphqlSuite: TestSuite = {
         {
             name: 'fragment() variables collected at operation level',
             run() {
-                const frag = fragment("F on User", {
+                const frag = fragment("F", "User", {
                     posts: field({ limit: v.int('n') }, list(select({ id: t.id() }))),
                 });
                 const q = query('Q', { user: select({ ...frag }) });
@@ -1402,7 +1402,7 @@ export const graphqlSuite: TestSuite = {
         {
             name: 'fragment() fields parse correctly',
             run() {
-                const userFields = fragment("UserFields on User", { id: t.id(), name: t.string() });
+                const userFields = fragment("UserFields", "User", { id: t.id(), name: t.string() });
                 const node = select({ ...userFields, email: t.string() });
                 const result = node.parse({ id: '1', name: 'Alice', email: 'a@b.com' });
                 assertEqual(result.id, '1');
@@ -1413,7 +1413,7 @@ export const graphqlSuite: TestSuite = {
         {
             name: 'fragment() with nested select',
             run() {
-                const frag = fragment("Addr on Address", {
+                const frag = fragment("Addr", "Address", {
                     city: t.string(),
                     country: t.string(),
                 });

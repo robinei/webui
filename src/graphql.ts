@@ -189,6 +189,7 @@ function list<T, V extends GQLVariable<any, any>>(node: GQLNode<T, V>): GQLNode<
 // --- Args & field() ---
 
 type RawArgValue = { readonly __raw: string };
+/** WARNING: never pass user input to raw() — it injects literal GraphQL with no escaping. */
 function raw(value: string): RawArgValue { return { __raw: value }; }
 
 type ArgValue = GQLVariable<any, any> | RawArgValue;
@@ -381,6 +382,7 @@ function emitField(key: string, node: GQLNode<any, any>): string {
 function select<F extends SelectionFields>(fields: F): GQLNode<InferSelection<F>, SelectionVars<F>> {
     const parts: string[] = [];
     const allVars: GQLVariable[] = [];
+    const allDefs: string[] = [];
     const fragmentGroups = new Map<FragmentMarker, [string, GQLNode<any, any>][]>();
 
     for (const [key, node] of Object.entries(fields)) {
@@ -393,10 +395,10 @@ function select<F extends SelectionFields>(fields: F): GQLNode<InferSelection<F>
             parts.push(emitField(key, node));
         }
         allVars.push(...node.vars);
+        if (node.definitions) allDefs.push(...node.definitions);
     }
 
     // Emit fragment groups (inline or named)
-    const allDefs: string[] = [];
     for (const [marker, group] of fragmentGroups) {
         const innerParts = group.map(([key, node]) => emitField(key, node));
         if (marker.name) {
@@ -408,11 +410,6 @@ function select<F extends SelectionFields>(fields: F): GQLNode<InferSelection<F>
         allVars.push(...marker.extraVars);
     }
 
-    // Collect definitions from child nodes
-    for (const node of Object.values(fields)) {
-        if (node.definitions) allDefs.push(...node.definitions);
-    }
-
     return {
         _type: null as any, _vars: null as any,
         fragment: `{ ${parts.join(' ')} }`,
@@ -420,7 +417,7 @@ function select<F extends SelectionFields>(fields: F): GQLNode<InferSelection<F>
         definitions: allDefs.length ? allDefs : undefined,
         parse(data) {
             if (data == null) throw new ParseError('Expected object, got null');
-            if (typeof data !== 'object') throw new ParseError('Expected object');
+            if (typeof data !== 'object' || Array.isArray(data)) throw new ParseError('Expected object');
             const result: Record<string, any> = {};
             for (const [key, node] of Object.entries(fields)) {
                 const optional = node.meta?.fragment?.optional;
@@ -548,6 +545,7 @@ async function execute<T, TVars extends Record<string, any>>(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: op.query, variables }),
     });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
     const json = await res.json();
     if (json.errors?.length) throw new GraphQLError(json.errors);
     if (typeof json !== 'object' || json === null || !('data' in json))
@@ -555,8 +553,8 @@ async function execute<T, TVars extends Record<string, any>>(
     return op.parse(json.data);
 }
 
-function fragment<F extends SelectionFields>(nameOnType: string, fields: F): F {
-    const name = nameOnType.split(' ')[0]!;
+function fragment<F extends SelectionFields>(name: string, onType: string, fields: F): F {
+    const nameOnType = `${name} on ${onType}`;
     const marker: FragmentMarker = { directive: nameOnType, optional: false, extraVars: [], name };
     const result: SelectionFields = {};
     for (const [key, node] of Object.entries(fields)) {
